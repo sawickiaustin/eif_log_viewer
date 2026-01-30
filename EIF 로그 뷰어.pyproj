@@ -22,6 +22,7 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="period_dialog.py" />
     <Compile Include="ui.py" />
     <Compile Include="parser.py" />
     <Compile Include="model.py" />

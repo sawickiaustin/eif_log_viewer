@@ -1,4 +1,6 @@
+# parser.py
 from model import LogLine
+
 
 def load_log_file(path: str) -> list[LogLine]:
     lines = []
