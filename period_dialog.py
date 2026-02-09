@@ -1,3 +1,4 @@
+Ôªø#period_dialog
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QDateTimeEdit, QPushButton
@@ -8,8 +9,8 @@ from PySide6.QtCore import QDateTime
 class PeriodDialog(QDialog):
     def __init__(self, start: QDateTime, end: QDateTime, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("±‚∞£ º±≈√")
-        self.resize(500, 300)
+        self.setWindowTitle("Í∏∞Í∞Ñ ÏÑ†ÌÉù")
+        self.resize(400, 200)
 
         self.start_edit = QDateTimeEdit(start)
         self.start_edit.setCalendarPopup(True)
@@ -22,11 +23,11 @@ class PeriodDialog(QDialog):
         layout = QVBoxLayout()
 
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Ω√¿€"))
+        row1.addWidget(QLabel("ÏãúÏûë"))
         row1.addWidget(self.start_edit)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("≥°"))
+        row2.addWidget(QLabel("ÎÅù"))
         row2.addWidget(self.end_edit)
 
         ok_btn = QPushButton("OK")
