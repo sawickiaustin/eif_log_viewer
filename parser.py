@@ -5,7 +5,8 @@ from model import LogLine
 def load_log_file(path: str) -> list[LogLine]:
     lines = []
 
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+    with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
+        # Note: utf-8-sig automatically removes BOM if present
         for i, line in enumerate(f):
             line = line.rstrip()
             if not line:

@@ -12,6 +12,7 @@
     <Name>EIF 로그 뷰어</Name>
     <RootNamespace>EIF 로그 뷰어</RootNamespace>
     <InterpreterId>MSBuild|env|$(MSBuildProjectFullPath)</InterpreterId>
+    <IsWindowsApplication>False</IsWindowsApplication>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -22,8 +23,9 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="br_tab.py" />
     <Compile Include="period_dialog.py" />
-    <Compile Include="ui.py" />
+    <Compile Include="db_manager.py" />
     <Compile Include="parser.py" />
     <Compile Include="model.py" />
     <Compile Include="app.py" />
