@@ -27,6 +27,8 @@ class BRTab(QWidget):
         self.br_calls = []
         self.br_index = {}
         self.txn_map = {}
+
+        self.execution_by_second = {}
     # ============================================================
     # 1️ Load FULL BR file (called once when BR file is opened)
     # ============================================================
@@ -36,9 +38,22 @@ class BRTab(QWidget):
 
         # Parse once
         self.build_br_calls(logs)
+        self.build_execution_index()
 
         # Show everything
         self.populate_tree_from_executions(self.br_calls)
+
+
+    def build_execution_index(self):
+        self.execution_by_second.clear()
+
+        for execution in self.br_calls:
+            sec = int(execution["timestamp"].timestamp())
+
+            if sec not in self.execution_by_second:
+                self.execution_by_second[sec] = []
+
+            self.execution_by_second[sec].append(execution)
 
     # ============================================================
     # 2️ Build master index (fast lookup)
@@ -62,55 +77,63 @@ class BRTab(QWidget):
     # 3️ Display subset (never touches full dataset)
     # ============================================================
     def display_logs(self, logs):
-        self.br_calls.clear()
-        self.br_index.clear()
-
-        self.build_br_calls(logs)
-        self.populate_tree_lazy()
-
+       self.br_calls.clear() 
+       self.br_index.clear() 
+       self.build_br_calls(logs) 
+       self.populate_tree_lazy() 
+    
     def show_all_brs(self):
         """
         Display every BR execution from the loaded BR log file.
+        Uses the already parsed execution list.
         """
-        if not self.full_br_logs:
+        if not self.br_calls:
             self.tree.clear()
             QTreeWidgetItem(self.tree, ["⚠ No BR log loaded"])
             return
 
-        # Display the full dataset
-        self.display_logs(self.full_br_logs)
+        self.populate_tree_from_executions(self.br_calls)
 
     # ============================================================
     # 4️ Build call groups for display
     # ============================================================
     def build_br_calls(self, logs):
-        import json
-        import re
+
         self.br_calls = []
         pending = {}
+
+        uuid_re = re.compile(r"(?:ELTR|ASSY)\((.*?)\)")
+
+        logs_local = logs
+        log_count = len(logs_local)
+
         i = 0
 
-        while i < len(logs):
-            raw = logs[i].raw
+        while i < log_count:
+
+            raw = logs_local[i].raw
+
             # ------------------------------------------------
             # REQUESTQ
             # ------------------------------------------------
             if "(REQUESTQ)" in raw:
+
                 ts = self.extract_timestamp(raw)
-                uuid_match = re.search(r"ELTR\((.*?)\)", raw)
-                if not uuid_match:
-                    uuid_match = re.search(r"ASSY\((.*?)\)", raw)
-                    if not uuid_match:
-                        i += 1
-                        continue
 
-                uuid = uuid_match.group(1)
+                match = uuid_re.search(raw)
+                if not match:
+                    i += 1
+                    continue
 
-                # Start JSON block
+                uuid = match.group(1)
+
                 block_lines = ["{"]
                 i += 1
-                while i < len(logs):
-                    line = logs[i].raw.strip()
+
+                # capture JSON block
+                while i < log_count:
+
+                    line = logs_local[i].raw.strip()
                     block_lines.append(line)
 
                     if line == "}":
@@ -118,17 +141,30 @@ class BRTab(QWidget):
 
                     i += 1
 
-                block_text = "\n".join(block_lines)
                 try:
-                    request_json = json.loads(block_text)
-                    br_name = request_json.get("actID", "UNKNOWN")
-                    tables = {}
-                    ref_json = request_json.get("refDS")
+                    request_json = json.loads("\n".join(block_lines))
+                except Exception:
+                    pending[uuid] = {
+                        "timestamp": ts,
+                        "br_name": "UNKNOWN",
+                        "tables": {}
+                    }
+                    i += 1
+                    continue
 
-                    if ref_json:
+                br_name = request_json.get("actID", "UNKNOWN")
+
+                tables = {}
+                ref_json = request_json.get("refDS")
+
+                if ref_json:
+                    try:
                         ref_data = json.loads(ref_json)
+
                         for table_name, rows in ref_data.items():
+
                             parsed_rows = []
+
                             for row in rows:
                                 parsed_rows.append({
                                     k: "" if v is None else str(v)
@@ -137,9 +173,8 @@ class BRTab(QWidget):
 
                             tables[table_name] = parsed_rows
 
-                except Exception:
-                    br_name = "UNKNOWN"
-                    tables = {}
+                    except Exception:
+                        pass
 
                 pending[uuid] = {
                     "timestamp": ts,
@@ -151,16 +186,16 @@ class BRTab(QWidget):
             # RECEIVE_REPLYQ
             # ------------------------------------------------
             elif "(RECEIVE_REPLYQ)" in raw:
-                uuid_match = re.search(r"ELTR\((.*?)\)", raw)
 
-                if not uuid_match:
-                    uuid_match = re.search(r"ASSY\((.*?)\)", raw)
-                    if not uuid_match:
-                        i += 1
-                        continue
+                match = uuid_re.search(raw)
+                if not match:
+                    i += 1
+                    continue
 
-                uuid = uuid_match.group(1)
-                if uuid not in pending:
+                uuid = match.group(1)
+
+                execution = pending.get(uuid)
+                if not execution:
                     i += 1
                     continue
 
@@ -169,75 +204,79 @@ class BRTab(QWidget):
                     i += 1
                     continue
 
-                json_part = raw[json_start:]
                 try:
-                    reply_json = json.loads(json_part)
-                    execution = pending.pop(uuid)
-                    for key, value in reply_json.items():
-                        if not key.startswith("OUT_"):
-                            continue
-
-                        rows = []
-
-                        for row in value:
-                            rows.append({
-                                k: "" if v is None else str(v)
-                                for k, v in row.items()
-                            })
-
-                        execution["tables"][key] = rows
-
-                    self.br_calls.append(execution)
-
+                    reply_json = json.loads(raw[json_start:])
                 except Exception:
-                    pass
+                    i += 1
+                    continue
+
+                pending.pop(uuid, None)
+
+                for key, value in reply_json.items():
+
+                    if not key.startswith("OUT_"):
+                        continue
+
+                    rows = []
+
+                    for row in value:
+                        rows.append({
+                            k: "" if v is None else str(v)
+                            for k, v in row.items()
+                        })
+
+                    execution["tables"][key] = rows
+
+                self.br_calls.append(execution)
 
             i += 1
 
     # ============================================================
     # 5️ Lazy tree population
     # ============================================================
-    def populate_tree_lazy(self):
+    def populate_tree_from_executions(self, executions):
+
+        self.tree.setUpdatesEnabled(False)
         self.tree.clear()
 
-        for execution in self.br_calls:
+        for execution in executions:
 
             root_text = f"{execution['timestamp'].strftime('%H:%M:%S.%f')[:-3]}  {execution['br_name']}"
+
             root_item = QTreeWidgetItem([root_text])
+
+            # store execution for lazy loading
+            root_item.setData(0, Qt.UserRole, execution)
+
+            # dummy child so expand arrow appears
+            root_item.addChild(QTreeWidgetItem(["Loading..."]))
+
             self.tree.addTopLevelItem(root_item)
 
-            for table_name, rows in execution["tables"].items():
-
-                table_item = QTreeWidgetItem([table_name])
-                root_item.addChild(table_item)
-
-                for row in rows:
-                    for col, val in row.items():
-                        col_item = QTreeWidgetItem([f"{col}: {val}"])
-                        table_item.addChild(col_item)
+        self.tree.setUpdatesEnabled(True)
 
     def on_item_expanded(self, item):
-        br_name = item.data(0, Qt.UserRole)
+        execution = item.data(0, Qt.UserRole)
 
-        if not br_name:
+        if not execution:
             return
 
-        # Prevent duplicate expansion
-        if item.childCount() > 0:
+        # if already populated
+        if item.childCount() > 1:
             return
 
-        calls = self.br_index.get(br_name, [])
+        item.takeChildren()
 
-        for call in calls:
-            call_item = QTreeWidgetItem(
-                [f"Call @ {call['timestamp'].strftime('%H:%M:%S.%f')[:-3]}"]
-            )
+        tables = execution["tables"]
 
-            for log in call["logs"]:
-                log_item = QTreeWidgetItem([log.raw])
-                call_item.addChild(log_item)
+        for table_name, rows in tables.items():
 
-            item.addChild(call_item)
+            table_item = QTreeWidgetItem([table_name])
+            item.addChild(table_item)
+
+            for row in rows:
+                for col, val in row.items():
+                    table_item.addChild(QTreeWidgetItem([f"{col}: {val}"]))
 
     # ============================================================
     # 6️ Show expected BRs only
@@ -257,25 +296,6 @@ class BRTab(QWidget):
             return datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S.%f")
         except Exception:
             return datetime.min
-
-
-    def populate_tree_from_executions(self, executions):
-        self.tree.clear()
-        for execution in executions:
-
-            root_text = f"{execution['timestamp'].strftime('%H:%M:%S.%f')[:-3]}  {execution['br_name']}"
-            root_item = QTreeWidgetItem([root_text])
-            self.tree.addTopLevelItem(root_item)
-
-            for table_name, rows in execution["tables"].items():
-
-                table_item = QTreeWidgetItem([table_name])
-                root_item.addChild(table_item)
-
-                for row in rows:
-                    for col, val in row.items():
-                        col_item = QTreeWidgetItem([f"{col}: {val}"])
-                        table_item.addChild(col_item)
 
     def show_brs_in_timerange(self, start_ts, end_ts, expected_brs=None):
 

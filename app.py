@@ -249,7 +249,7 @@ class LogViewer(QMainWindow):
         if not logs:
             self.log_list.addItem("⚠️ 결과 없음")
             self.log_list.setUpdatesEnabled(True)
-            self.br_tab.show_expected_brs([])
+            #self.br_tab.show_expected_brs([])
             return
 
         for log in logs:
@@ -297,6 +297,7 @@ class LogViewer(QMainWindow):
             result.append(log)
 
         self.display_logs(result)
+        self.reset_br_view()
 
     # -------------------
     # Sequence Logic
@@ -492,7 +493,8 @@ class LogViewer(QMainWindow):
                 target, QListWidget.PositionAtCenter
             )
             self.log_list.setCurrentItem(target)
-        self.br_tab.show_all_brs()
+
+        self.reset_br_view()
 
 
     # -------------------
@@ -512,6 +514,8 @@ class LogViewer(QMainWindow):
                 filtered.append(log)
 
         self.display_logs(filtered)
+        self.reset_br_view()
+
         
 
 
@@ -590,6 +594,11 @@ class LogViewer(QMainWindow):
             expected_brs.update(self.db.get_brs_for_item(item_code))
 
         self.br_tab.show_expected_brs(expected_brs)
+
+
+    def reset_br_view(self):
+        if self.br_tab.full_br_logs:
+            self.br_tab.show_all_brs()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
