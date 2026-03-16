@@ -61,31 +61,43 @@ class LogViewer(QMainWindow):
         top.addLayout(self.system_layout)
 
         # -------------------
-        # Main Log List
+        # Variable Log List
         # -------------------
         self.log_list = QListWidget()
         self.log_list.itemDoubleClicked.connect(self.jump_to_log)
 
         # -------------------
-        # Right Tabs
+        # BR Tab (log viewer)
         # -------------------
-        self.tabs = QTabWidget()
+        self.br_tab = BRTab()
+
+        # -------------------
+        # LEFT SIDE TABS (Log sources)
+        # -------------------
+        self.left_tabs = QTabWidget()
+        self.left_tabs.addTab(self.log_list, "Variable Logs")
+        self.left_tabs.addTab(self.br_tab, "BR Logs")
+
+        # -------------------
+        # RIGHT SIDE TABS (Analysis)
+        # -------------------
+        self.right_tabs = QTabWidget()
 
         self.item_list = QListWidget()
         self.item_list.itemDoubleClicked.connect(self.on_item_double_clicked)
-        self.tabs.addTab(self.item_list, "Item별")
+        self.right_tabs.addTab(self.item_list, "Item별")
 
         self.seq_tree = QTreeWidget()
         self.seq_tree.setHeaderLabel("Sequences")
         self.seq_tree.itemClicked.connect(self.on_sequence_clicked)
-        self.tabs.addTab(self.seq_tree, "Sequence")
+        self.right_tabs.addTab(self.seq_tree, "Sequence")
 
-        self.br_tab = BRTab()
-        self.tabs.addTab(self.br_tab, "BR")
-
+        # -------------------
+        # Layout
+        # -------------------
         body = QHBoxLayout()
-        body.addWidget(self.log_list, 4)
-        body.addWidget(self.tabs, 2)
+        body.addWidget(self.left_tabs, 4)
+        body.addWidget(self.right_tabs, 2)
 
         layout = QVBoxLayout()
         layout.addLayout(top)

@@ -2,6 +2,8 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem
 from PySide6.QtCore import Qt
 from datetime import datetime
+import json
+import re
 
 
 class BRTab(QWidget):
@@ -82,83 +84,115 @@ class BRTab(QWidget):
     # 4️ Build call groups for display
     # ============================================================
     def build_br_calls(self, logs):
-
+        import json
+        import re
         self.br_calls = []
+        pending = {}
+        i = 0
 
-        current_execution = None
-        current_table = None
-        headers = []
-
-        for log in logs:
-            raw = log.raw.strip()
-
-            # ----------------------------
-            # Detect BIZRULE start
-            # ----------------------------
-            if "[BIZRULE]" in raw:
-
+        while i < len(logs):
+            raw = logs[i].raw
+            # ------------------------------------------------
+            # REQUESTQ
+            # ------------------------------------------------
+            if "(REQUESTQ)" in raw:
                 ts = self.extract_timestamp(raw)
-                br_name = raw.split("[BIZRULE]")[-1].strip()
+                uuid_match = re.search(r"ELTR\((.*?)\)", raw)
+                if not uuid_match:
+                    uuid_match = re.search(r"ASSY\((.*?)\)", raw)
+                    if not uuid_match:
+                        i += 1
+                        continue
 
-                # Peek next table type later
-                new_execution = {
+                uuid = uuid_match.group(1)
+
+                # Start JSON block
+                block_lines = ["{"]
+                i += 1
+                while i < len(logs):
+                    line = logs[i].raw.strip()
+                    block_lines.append(line)
+
+                    if line == "}":
+                        break
+
+                    i += 1
+
+                block_text = "\n".join(block_lines)
+                try:
+                    request_json = json.loads(block_text)
+                    br_name = request_json.get("actID", "UNKNOWN")
+                    tables = {}
+                    ref_json = request_json.get("refDS")
+
+                    if ref_json:
+                        ref_data = json.loads(ref_json)
+                        for table_name, rows in ref_data.items():
+                            parsed_rows = []
+                            for row in rows:
+                                parsed_rows.append({
+                                    k: "" if v is None else str(v)
+                                    for k, v in row.items()
+                                })
+
+                            tables[table_name] = parsed_rows
+
+                except Exception:
+                    br_name = "UNKNOWN"
+                    tables = {}
+
+                pending[uuid] = {
                     "timestamp": ts,
                     "br_name": br_name,
-                    "tables": {}
+                    "tables": tables
                 }
 
-                # Temporarily store but don't append yet
-                current_execution = new_execution
-                current_table = None
-                headers = []
+            # ------------------------------------------------
+            # RECEIVE_REPLYQ
+            # ------------------------------------------------
+            elif "(RECEIVE_REPLYQ)" in raw:
+                uuid_match = re.search(r"ELTR\((.*?)\)", raw)
 
-                self.br_calls.append(current_execution)
+                if not uuid_match:
+                    uuid_match = re.search(r"ASSY\((.*?)\)", raw)
+                    if not uuid_match:
+                        i += 1
+                        continue
 
-            # ----------------------------
-            # Detect table
-            # ----------------------------
-            elif raw.startswith("Table Name"):
+                uuid = uuid_match.group(1)
+                if uuid not in pending:
+                    i += 1
+                    continue
 
-                parts = raw.split(":")
-                if len(parts) >= 2:
+                json_start = raw.find("{")
+                if json_start == -1:
+                    i += 1
+                    continue
 
-                    table_name = parts[1].split("-")[0].strip()
-                    current_table = table_name
-                    headers = []
+                json_part = raw[json_start:]
+                try:
+                    reply_json = json.loads(json_part)
+                    execution = pending.pop(uuid)
+                    for key, value in reply_json.items():
+                        if not key.startswith("OUT_"):
+                            continue
 
-                    # If this is an OUT_ table and previous execution exists
-                    if table_name.startswith("OUT_") and len(self.br_calls) >= 2:
+                        rows = []
 
-                        prev = self.br_calls[-2]
+                        for row in value:
+                            rows.append({
+                                k: "" if v is None else str(v)
+                                for k, v in row.items()
+                            })
 
-                        # Same BR name → merge reply
-                        if prev["br_name"] == current_execution["br_name"]:
-                            prev["tables"][table_name] = []
-                            current_execution = prev
+                        execution["tables"][key] = rows
 
-                            # remove the duplicate execution we just created
-                            self.br_calls.pop()
+                    self.br_calls.append(execution)
 
-                    if current_execution:
-                        current_execution["tables"][table_name] = []
+                except Exception:
+                    pass
 
-            # ----------------------------
-            # Detect header row
-            # ----------------------------
-            elif raw.startswith("[") and "]" in raw and current_table:
-
-                headers = [h.strip("[]") for h in raw.split() if h.startswith("[")]
-
-            # ----------------------------
-            # Detect data row
-            # ----------------------------
-            elif raw.startswith("(") and current_table and headers:
-
-                values = [v.strip("[]") for v in raw.split() if v.startswith("[")]
-
-                row_dict = dict(zip(headers, values))
-
-                current_execution["tables"][current_table].append(row_dict)
+            i += 1
 
     # ============================================================
     # 5️ Lazy tree population
