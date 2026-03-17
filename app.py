@@ -65,6 +65,7 @@ class LogViewer(QMainWindow):
         # -------------------
         self.log_list = QListWidget()
         self.log_list.itemDoubleClicked.connect(self.jump_to_log)
+        self.pending_br_jump_ts = None
 
         # -------------------
         # BR Tab (log viewer)
@@ -78,13 +79,16 @@ class LogViewer(QMainWindow):
         self.left_tabs.addTab(self.log_list, "Variable Logs")
         self.left_tabs.addTab(self.br_tab, "BR Logs")
 
+        # Detect tab switch
+        self.left_tabs.currentChanged.connect(self.on_left_tab_changed)
+
         # -------------------
         # RIGHT SIDE TABS (Analysis)
         # -------------------
         self.right_tabs = QTabWidget()
 
         self.item_list = QListWidget()
-        self.item_list.itemDoubleClicked.connect(self.on_item_double_clicked)
+        self.item_list.itemClicked.connect(self.on_item_double_clicked)
         self.right_tabs.addTab(self.item_list, "Item별")
 
         self.seq_tree = QTreeWidget()
@@ -263,41 +267,70 @@ class LogViewer(QMainWindow):
         # Centralized BR refresh
         #self.refresh_br_for_visible_logs(logs)
 
-    # -------------------
-    # Search
-    # -------------------
+        # -------------------
+        # Search
+        # -------------------
     def search_logs(self):
-        keyword = self.search_input.text().strip().casefold()
+
+        keyword = self.search_input.text().strip()
+        keyword_lower = keyword.casefold()
+
         start = self.period_start.toPython()
         end = self.period_end.toPython()
 
         active = {
-            s for s, c in self.system_checkboxes.items() if c.isChecked()
+            s for s, c in self.system_checkboxes.items()
+            if c.isChecked()
         }
 
         if not active:
             self.display_logs([])
             return
 
+        # ------------------------------------
+        # Filter VARIABLE logs
+        # ------------------------------------
         result = []
 
         for log in self.variable_logs:
+
             raw = log.raw
 
             if self.extract_system(raw) not in active:
-                continue
-
-            if keyword and keyword not in raw.casefold():
                 continue
 
             ts = self.extract_timestamp(raw)
             if ts and not (start <= ts <= end):
                 continue
 
+            if keyword_lower and keyword_lower not in raw.casefold():
+                continue
+
             result.append(log)
 
         self.display_logs(result)
-        self.reset_br_view()
+
+        # ------------------------------------
+        # Filter BR logs
+        # ------------------------------------
+        if not self.br_tab.full_br_logs:
+            return
+
+        start_ts = start.timestamp()
+        end_ts = end.timestamp()
+
+        # No keyword → just show BRs in time range
+        if not keyword:
+            self.br_tab.show_brs_in_timerange(start_ts, end_ts)
+            return
+
+        # Keyword search
+        br_results = self.br_tab.search_brs(keyword, start_ts, end_ts)
+
+        if br_results:
+            self.br_tab.populate_tree_from_executions(br_results)
+        else:
+            self.br_tab.tree.clear()
 
     # -------------------
     # Sequence Logic
@@ -380,7 +413,7 @@ class LogViewer(QMainWindow):
             return
 
         # ----------------------------
-        # 1️ Filter VARIABLE logs
+        # 1️⃣ Filter VARIABLE logs
         # ----------------------------
         subset = []
 
@@ -397,20 +430,40 @@ class LogViewer(QMainWindow):
         self.display_logs(subset)
 
         # ----------------------------
-        # 2️ Filter BR executions
+        # 2️⃣ Handle BR executions
         # ----------------------------
         expected_brs = self.db.get_brs_for_item(item_code)
 
+        # If DB has no BRs saved for this sequence
+        if not expected_brs:
+
+            if self.br_tab.full_br_logs:
+
+                # restore full BR list
+                self.br_tab.show_all_brs()
+
+                # store timestamp
+                if st:
+                    self.pending_br_jump_ts = st.timestamp()
+
+                    # 🟢 If BR tab is active, jump immediately
+                    if self.left_tabs.currentWidget() == self.br_tab:
+                        self.jump_br_view_to_timestamp(self.pending_br_jump_ts)
+                        self.pending_br_jump_ts = None
+
+            return
+
+        # If BR logs not loaded yet
         if not self.br_tab.full_br_logs:
             self.br_tab.show_expected_brs(expected_brs)
             return
 
+        # Normal behavior (existing logic)
         buffer_sec = 3
         start_ts = st.timestamp() - buffer_sec
         end_ts = et.timestamp() + buffer_sec
 
         self.br_tab.show_brs_in_timerange(start_ts, end_ts, expected_brs)
-
 
     # -------------------
     # Build Item List
@@ -474,6 +527,7 @@ class LogViewer(QMainWindow):
     # Jump to Original Position
     # -------------------
     def jump_to_log(self, item):
+
         if not self.variable_logs:
             return
 
@@ -481,6 +535,9 @@ class LogViewer(QMainWindow):
         if idx is None:
             return
 
+        # ----------------------------
+        # Reset search
+        # ----------------------------
         self.search_input.blockSignals(True)
         self.search_input.clear()
         self.search_input.blockSignals(False)
@@ -488,21 +545,53 @@ class LogViewer(QMainWindow):
         self.display_logs(self.variable_logs)
 
         target = self.log_list.item(idx)
-        if target:
-            self.log_list.scrollToItem(
-                target, QListWidget.PositionAtCenter
-            )
-            self.log_list.setCurrentItem(target)
+        if not target:
+            return
 
-        self.reset_br_view()
+        self.log_list.scrollToItem(target, QListWidget.PositionAtCenter)
+        self.log_list.setCurrentItem(target)
+
+        # ----------------------------
+        # Reset BR tree to FULL list
+        # ----------------------------
+        if self.br_tab.br_calls:
+            self.br_tab.show_all_brs()
+
+        # ----------------------------
+        # Save timestamp for BR jump
+        # ----------------------------
+        log = self.variable_logs[idx]
+        ts = self.extract_timestamp(log.raw)
+
+        if ts:
+            self.pending_br_jump_ts = ts.timestamp()
 
 
     # -------------------
     # Item Double Click
     # -------------------
     def on_item_double_clicked(self, item_widget):
-        item_code = item_widget.data(Qt.UserRole)
+        data = item_widget.data(Qt.UserRole)
 
+        # -----------------------
+        # BR tab active
+        # -----------------------
+        if self.left_tabs.currentWidget() == self.br_tab:
+            if not self.br_tab.br_calls:
+                return
+
+            filtered = [
+                e for e in self.br_tab.br_calls
+                if e["br_name"] == data
+            ]
+
+            self.br_tab.populate_tree_from_executions(filtered)
+            return
+
+        # -----------------------
+        # Variable tab active
+        # -----------------------
+        item_code = data
         if not item_code:
             return
 
@@ -517,8 +606,6 @@ class LogViewer(QMainWindow):
         self.reset_br_view()
 
         
-
-
     def refresh_br_for_visible_logs(self, visible_logs):
 
         if not self.br_tab.full_br_logs:
@@ -599,6 +686,58 @@ class LogViewer(QMainWindow):
     def reset_br_view(self):
         if self.br_tab.full_br_logs:
             self.br_tab.show_all_brs()
+
+    def build_br_list(self):
+        self.item_list.clear()
+
+        if not self.br_tab.br_calls:
+            return
+
+        br_names = {execution["br_name"] for execution in self.br_tab.br_calls}
+
+        for br in sorted(br_names):
+            item = QListWidgetItem(br)
+            item.setData(Qt.UserRole, br)
+            self.item_list.addItem(item)
+
+    def on_left_tab_changed(self, index):
+        tab_text = self.left_tabs.tabText(index)
+
+        if tab_text == "BR Logs":
+
+            self.build_br_list()
+
+            if self.pending_br_jump_ts:
+                self.jump_br_view_to_timestamp(self.pending_br_jump_ts)
+                self.pending_br_jump_ts = None
+
+        else:
+            self.build_item_list()
+
+    def jump_br_view_to_timestamp(self, ts):
+        tree = self.br_tab.tree
+
+        closest_item = None
+        closest_diff = float("inf")
+
+        for i in range(tree.topLevelItemCount()):
+
+            item = tree.topLevelItem(i)
+            execution = item.data(0, Qt.UserRole)
+
+            if not execution:
+                continue
+
+            br_ts = execution["timestamp"].timestamp()
+            diff = abs(br_ts - ts)
+
+            if diff < closest_diff:
+                closest_diff = diff
+                closest_item = item
+
+        if closest_item:
+            tree.scrollToItem(closest_item, QTreeWidget.PositionAtCenter)
+            tree.setCurrentItem(closest_item)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
