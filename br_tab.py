@@ -7,15 +7,15 @@ import re
 
 
 class BRTab(QWidget):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
         layout = QVBoxLayout(self)
-
 
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Business Rules"])
         self.tree.itemExpanded.connect(self.on_item_expanded)
+        self.tree.itemClicked.connect(self.on_br_clicked)
 
         layout.addWidget(self.tree)
 
@@ -29,6 +29,7 @@ class BRTab(QWidget):
         self.txn_map = {}
 
         self.execution_by_second = {}
+        self.highlighted_item = None
     # ============================================================
     # 1️ Load FULL BR file (called once when BR file is opened)
     # ============================================================
@@ -395,3 +396,63 @@ class BRTab(QWidget):
                 results.append(execution)
 
         return results
+
+    def highlight_br_executions(self, executions):
+        """Highlight multiple BR executions in the tree based on timestamp AND BR name"""
+        tree = self.tree
+
+        # Clear previous highlights
+        if self.highlighted_item:
+            for item in self.highlighted_item:
+                item.setBackground(0, Qt.white)
+        self.highlighted_item = []
+
+        # Build a set of (timestamp, br_name) tuples to match
+        exec_set = {(e["timestamp"].timestamp(), e["br_name"]) for e in executions}
+
+        for i in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(i)
+            exec_data = item.data(0, Qt.UserRole)
+            if not exec_data:
+                continue
+
+            key = (exec_data["timestamp"].timestamp(), exec_data["br_name"])
+            if key in exec_set:
+                item.setBackground(0, Qt.yellow)
+                self.highlighted_item.append(item)
+
+        # Scroll to the first highlighted item (optional)
+        if self.highlighted_item:
+            tree.scrollToItem(self.highlighted_item[0], QTreeWidget.PositionAtCenter)
+
+    def clear_highlight(self):
+        if not self.highlighted_item:
+            return
+
+        # Copy list so we don't modify while iterating
+        items = self.highlighted_item if isinstance(self.highlighted_item, list) else [self.highlighted_item]
+
+        for item in items:
+            try:
+                item.setBackground(0, Qt.white)
+            except RuntimeError:
+                # Item already deleted by Qt tree refresh
+                pass
+
+        self.highlighted_item = None
+
+
+    def on_br_clicked(self, item, column):
+        exec_data = item.data(0, Qt.UserRole)
+
+        if not exec_data:
+            return
+
+        ts = exec_data.get("timestamp")
+        if not ts:
+            return
+
+        main_window = self.window()
+
+        if hasattr(main_window, "pending_variable_jump"):
+            main_window.pending_variable_jump = ts

@@ -70,7 +70,8 @@ class LogViewer(QMainWindow):
         # -------------------
         # BR Tab (log viewer)
         # -------------------
-        self.br_tab = BRTab()
+        self.br_tab = BRTab(self)
+        self.pending_br_highlight = None
 
         # -------------------
         # LEFT SIDE TABS (Log sources)
@@ -95,6 +96,8 @@ class LogViewer(QMainWindow):
         self.seq_tree.setHeaderLabel("Sequences")
         self.seq_tree.itemClicked.connect(self.on_sequence_clicked)
         self.right_tabs.addTab(self.seq_tree, "Sequence")
+
+        self.pending_variable_jump = None
 
         # -------------------
         # Layout
@@ -263,6 +266,7 @@ class LogViewer(QMainWindow):
             self.log_list.addItem(item)
 
         self.log_list.setUpdatesEnabled(True)
+        self.br_tab.clear_highlight()
 
         # Centralized BR refresh
         #self.refresh_br_for_visible_logs(logs)
@@ -412,58 +416,75 @@ class LogViewer(QMainWindow):
         if not st or not et:
             return
 
-        # ----------------------------
-        # 1️⃣ Filter VARIABLE logs
-        # ----------------------------
+        # ---------------------------------
+        # 0️⃣ Clear current search
+        # ---------------------------------
+        self.search_input.blockSignals(True)
+        self.search_input.clear()
+        self.search_input.blockSignals(False)
+
+        st_ts = int(st.timestamp())
+        et_ts = int(et.timestamp())
+
+        # ---------------------------------
+        # 1️⃣ Show variable logs for sequence
+        # ---------------------------------
         subset = []
 
         for log in self.variable_logs:
             ts = self.extract_timestamp(log.raw)
             parsed_item, _ = self.parse_item_signal(log.raw)
 
-            if not ts:
-                continue
+            if ts:
+                ts_val = int(ts.timestamp())
 
-            if parsed_item == item_code and st <= ts <= et:
-                subset.append(log)
+                if parsed_item == item_code and st_ts <= ts_val <= et_ts:
+                    subset.append(log)
 
         self.display_logs(subset)
 
-        # ----------------------------
-        # 2️⃣ Handle BR executions
-        # ----------------------------
-        expected_brs = self.db.get_brs_for_item(item_code)
+        # ---------------------------------
+        # 2️⃣ Reset BR view to FULL list (background only)
+        # ---------------------------------
+        if self.br_tab.br_calls:
+            self.br_tab.show_all_brs()
 
-        # If DB has no BRs saved for this sequence
-        if not expected_brs:
-
-            if self.br_tab.full_br_logs:
-
-                # restore full BR list
-                self.br_tab.show_all_brs()
-
-                # store timestamp
-                if st:
-                    self.pending_br_jump_ts = st.timestamp()
-
-                    # 🟢 If BR tab is active, jump immediately
-                    if self.left_tabs.currentWidget() == self.br_tab:
-                        self.jump_br_view_to_timestamp(self.pending_br_jump_ts)
-                        self.pending_br_jump_ts = None
-
+        # ---------------------------------
+        # Stop if no BR file loaded
+        # ---------------------------------
+        if not self.br_tab.br_calls:
             return
 
-        # If BR logs not loaded yet
-        if not self.br_tab.full_br_logs:
-            self.br_tab.show_expected_brs(expected_brs)
-            return
+        expected_brs = set(self.db.get_brs_for_item(item_code))
 
-        # Normal behavior (existing logic)
-        buffer_sec = 3
-        start_ts = st.timestamp() - buffer_sec
-        end_ts = et.timestamp() + buffer_sec
+        # ---------------------------------
+        # 3️⃣ Try highlighting expected BRs
+        # ---------------------------------
+        if expected_brs:
 
-        self.br_tab.show_brs_in_timerange(start_ts, end_ts, expected_brs)
+            executions_to_highlight = [
+                e for e in self.br_tab.br_calls
+                if e["br_name"] in expected_brs
+                and st_ts <= int(e["timestamp"].timestamp()) <= et_ts
+            ]
+
+            if executions_to_highlight:
+                # ✅ DO NOT switch tabs — just store for later
+                if self.left_tabs.currentWidget() == self.br_tab:
+                    self.br_tab.highlight_br_executions(executions_to_highlight)
+                else:
+                    self.pending_br_highlight = executions_to_highlight
+                return
+
+        # ---------------------------------
+        # 4️⃣ No BR found → prepare jump
+        # ---------------------------------
+        if self.left_tabs.currentWidget() == self.br_tab:
+            self.jump_br_view_to_timestamp(st_ts)
+            self.br_tab.clear_highlight()
+        else:
+            self.pending_br_jump_ts = st_ts
+            self.pending_br_highlight = None
 
     # -------------------
     # Build Item List
@@ -703,16 +724,30 @@ class LogViewer(QMainWindow):
     def on_left_tab_changed(self, index):
         tab_text = self.left_tabs.tabText(index)
 
+        # -----------------------
+        # BR TAB OPENED
+        # -----------------------
         if tab_text == "BR Logs":
-
             self.build_br_list()
 
-            if self.pending_br_jump_ts:
+            if self.pending_br_highlight:
+                self.br_tab.highlight_br_executions(self.pending_br_highlight)
+                self.pending_br_highlight = None
+
+            elif self.pending_br_jump_ts:
                 self.jump_br_view_to_timestamp(self.pending_br_jump_ts)
                 self.pending_br_jump_ts = None
 
+        # -----------------------
+        # VARIABLE TAB OPENED
+        # -----------------------
         else:
+
             self.build_item_list()
+
+            if self.pending_variable_jump:
+                self.jump_variable_view_to_timestamp(self.pending_variable_jump)
+                self.pending_variable_jump = None
 
     def jump_br_view_to_timestamp(self, ts):
         tree = self.br_tab.tree
@@ -738,6 +773,42 @@ class LogViewer(QMainWindow):
         if closest_item:
             tree.scrollToItem(closest_item, QTreeWidget.PositionAtCenter)
             tree.setCurrentItem(closest_item)
+
+    def jump_variable_view_to_timestamp(self, ts):
+
+        target_ts = int(ts.timestamp())
+
+        closest_item = None
+        closest_diff = float("inf")
+
+        for i in range(self.log_list.count()):
+
+            item = self.log_list.item(i)
+            idx = item.data(Qt.UserRole)
+
+            if idx is None:
+                continue
+
+            log = self.variable_logs[idx]
+
+            log_ts = self.extract_timestamp(log.raw)
+            if not log_ts:
+                continue
+
+            log_sec = int(log_ts.timestamp())
+
+            diff = abs(log_sec - target_ts)
+
+            if diff < closest_diff:
+                closest_diff = diff
+                closest_item = item
+
+        if closest_item:
+
+            self.left_tabs.setCurrentWidget(self.log_list)
+
+            self.log_list.scrollToItem(closest_item, QListWidget.PositionAtCenter)
+            self.log_list.setCurrentItem(closest_item)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
