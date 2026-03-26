@@ -228,6 +228,12 @@ class BRTab(QWidget):
 
                     execution["tables"][key] = rows
 
+
+                execution["search_blob"] = (
+                    execution["br_name"] + " " +
+                    json.dumps(execution["tables"])
+                ).casefold()
+
                 self.br_calls.append(execution)
 
             i += 1
@@ -329,13 +335,6 @@ class BRTab(QWidget):
             self.show_expected_brs(expected_brs)
 
     def search_brs(self, keyword, start_ts=None, end_ts=None):
-        """
-        Search BR executions by:
-        - BR name
-        - table names
-        - column names
-        - column values
-        """
 
         if not keyword:
             return None
@@ -348,51 +347,15 @@ class BRTab(QWidget):
 
             ts_val = execution["timestamp"].timestamp()
 
-            # Apply time range filter
+            # Time filter
             if start_ts and ts_val < start_ts:
                 continue
 
             if end_ts and ts_val > end_ts:
                 continue
 
-            # ----------------------------
-            # Search BR name
-            # ----------------------------
-            if keyword in execution["br_name"].casefold():
-                results.append(execution)
-                continue
-
-            # ----------------------------
-            # Search tables
-            # ----------------------------
-            tables = execution["tables"]
-            found = False
-
-            for table_name, rows in tables.items():
-
-                # table name match
-                if keyword in table_name.casefold():
-                    found = True
-                    break
-
-                for row in rows:
-                    for col, val in row.items():
-
-                        if keyword in col.casefold():
-                            found = True
-                            break
-
-                        if keyword in val.casefold():
-                            found = True
-                            break
-
-                    if found:
-                        break
-
-                if found:
-                    break
-
-            if found:
+            # ✅ FAST search using prebuilt blob
+            if keyword in execution.get("search_blob", ""):
                 results.append(execution)
 
         return results

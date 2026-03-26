@@ -15,7 +15,7 @@ from parser import load_log_file
 from period_dialog import PeriodDialog
 from br_tab import BRTab
 from db_manager import DBManager
-
+from PySide6.QtCore import QTimer
 
 class LogViewer(QMainWindow):
     def __init__(self):
@@ -99,6 +99,13 @@ class LogViewer(QMainWindow):
 
         self.pending_variable_jump = None
 
+        self.search_timer = QTimer()
+        self.search_timer.setSingleShot(True)
+        self.search_timer.timeout.connect(self._execute_search)
+
+        self.search_input.textChanged.disconnect()
+        self.search_input.textChanged.connect(self.schedule_search)
+
         # -------------------
         # Layout
         # -------------------
@@ -157,9 +164,11 @@ class LogViewer(QMainWindow):
     def load_variable_log(self, path):
         self.variable_logs = load_log_file(path)
 
-        # Store original index once
         for idx, log in enumerate(self.variable_logs):
             log.original_index = idx
+            log.ts = self.extract_timestamp(log.raw)   # ✅ cache
+            log.system = self.extract_system(log.raw)  # ✅ cache
+            log.raw_lower = log.raw.casefold()         # ✅ cache
 
         self.display_logs(self.variable_logs)
         self.update_period_from_logs()
@@ -292,22 +301,20 @@ class LogViewer(QMainWindow):
             return
 
         # ------------------------------------
-        # Filter VARIABLE logs
+        # Filter VARIABLE logs (FAST)
         # ------------------------------------
         result = []
 
         for log in self.variable_logs:
 
-            raw = log.raw
-
-            if self.extract_system(raw) not in active:
+            # ✅ use cached values
+            if log.system not in active:
                 continue
 
-            ts = self.extract_timestamp(raw)
-            if ts and not (start <= ts <= end):
+            if log.ts and not (start <= log.ts <= end):
                 continue
 
-            if keyword_lower and keyword_lower not in raw.casefold():
+            if keyword_lower and keyword_lower not in log.raw_lower:
                 continue
 
             result.append(log)
@@ -315,7 +322,7 @@ class LogViewer(QMainWindow):
         self.display_logs(result)
 
         # ------------------------------------
-        # Filter BR logs
+        # Filter BR logs (OPTIMIZED)
         # ------------------------------------
         if not self.br_tab.full_br_logs:
             return
@@ -323,13 +330,11 @@ class LogViewer(QMainWindow):
         start_ts = start.timestamp()
         end_ts = end.timestamp()
 
-        # No keyword → just show BRs in time range
         if not keyword:
             self.br_tab.show_brs_in_timerange(start_ts, end_ts)
             return
 
-        # Keyword search
-        br_results = self.br_tab.search_brs(keyword, start_ts, end_ts)
+        br_results = self.br_tab.search_brs(keyword_lower, start_ts, end_ts)
 
         if br_results:
             self.br_tab.populate_tree_from_executions(br_results)
@@ -809,6 +814,13 @@ class LogViewer(QMainWindow):
 
             self.log_list.scrollToItem(closest_item, QListWidget.PositionAtCenter)
             self.log_list.setCurrentItem(closest_item)
+
+
+    def schedule_search(self):
+        self.search_timer.start(250)  # wait 250ms after typing
+
+    def _execute_search(self):
+        self.search_logs()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
