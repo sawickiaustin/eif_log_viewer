@@ -30,6 +30,7 @@ class BRTab(QWidget):
 
         self.execution_by_second = {}
         self.highlighted_item = None
+        self.last_displayed_ids = None
     # ============================================================
     # 1️ Load FULL BR file (called once when BR file is opened)
     # ============================================================
@@ -243,6 +244,13 @@ class BRTab(QWidget):
     # ============================================================
     def populate_tree_from_executions(self, executions):
 
+        ids = [id(e) for e in executions]
+
+        if ids == self.last_displayed_ids:
+            return  # ✅ skip expensive rebuild
+
+        self.last_displayed_ids = ids
+
         self.tree.setUpdatesEnabled(False)
         self.tree.clear()
 
@@ -251,13 +259,9 @@ class BRTab(QWidget):
             root_text = f"{execution['timestamp'].strftime('%H:%M:%S.%f')[:-3]}  {execution['br_name']}"
 
             root_item = QTreeWidgetItem([root_text])
-
-            # store execution for lazy loading
             root_item.setData(0, Qt.UserRole, execution)
 
-            # dummy child so expand arrow appears
             root_item.addChild(QTreeWidgetItem(["Loading..."]))
-
             self.tree.addTopLevelItem(root_item)
 
         self.tree.setUpdatesEnabled(True)
@@ -340,23 +344,25 @@ class BRTab(QWidget):
             return None
 
         keyword = keyword.casefold()
-
         results = []
 
-        for execution in self.br_calls:
+        if start_ts and end_ts:
+            start_sec = int(start_ts)
+            end_sec = int(end_ts)
 
-            ts_val = execution["timestamp"].timestamp()
+            for sec in range(start_sec, end_sec + 1):
+                executions = self.execution_by_second.get(sec)
+                if not executions:
+                    continue
 
-            # Time filter
-            if start_ts and ts_val < start_ts:
-                continue
+                for execution in executions:
+                    if keyword in execution.get("search_blob", ""):
+                        results.append(execution)
 
-            if end_ts and ts_val > end_ts:
-                continue
-
-            # ✅ FAST search using prebuilt blob
-            if keyword in execution.get("search_blob", ""):
-                results.append(execution)
+        else:
+            for execution in self.br_calls:
+                if keyword in execution.get("search_blob", ""):
+                    results.append(execution)
 
         return results
 

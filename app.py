@@ -1,5 +1,6 @@
 ﻿#app.py
 import sys
+import re
 from datetime import datetime
 
 from PySide6.QtWidgets import (
@@ -23,6 +24,8 @@ class LogViewer(QMainWindow):
 
         self.setWindowTitle("EIF 로그 뷰어")
         self.resize(1200, 800)
+
+        self.KNOWN_EQUIPMENTS = ["MIX", "COT", "ROL", "RWD", "TRS"]
 
         # Separate storage
         self.variable_logs = []
@@ -144,6 +147,15 @@ class LogViewer(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+
+    def load_br_log(self, path):
+        logs = load_log_file(path)
+        self.br_logs = logs
+
+        # send to BR tab
+        self.br_tab.load_full_logs(logs)
+
+        print(f"Loaded BR log: {len(logs)} lines")
     # -------------------
     # File Loading
     # -------------------
@@ -164,22 +176,105 @@ class LogViewer(QMainWindow):
     def load_variable_log(self, path):
         self.variable_logs = load_log_file(path)
 
-        for idx, log in enumerate(self.variable_logs):
-            log.original_index = idx
-            log.ts = self.extract_timestamp(log.raw)   # ✅ cache
-            log.system = self.extract_system(log.raw)  # ✅ cache
-            log.raw_lower = log.raw.casefold()         # ✅ cache
+        dynamic_items = {}
+        eqp_set = set()
 
+        logs_with_ts = []  # 🔥 (ts_val, log)
+
+        # -----------------------------
+        # 🔥 SINGLE PASS (parse + cache everything)
+        # -----------------------------
+        for idx, log in enumerate(self.variable_logs):
+            raw = log.raw
+
+            log.original_index = idx
+            log.raw_lower = raw.casefold()
+
+            # -------------------------
+            # timestamp (FAST manual parse)
+            # -------------------------
+            try:
+                ts = datetime(
+                    int(raw[0:4]), int(raw[5:7]), int(raw[8:10]),
+                    int(raw[11:13]), int(raw[14:16]), int(raw[17:19])
+                )
+            except:
+                ts = None
+
+            log.ts = ts
+            ts_val = ts.timestamp() if ts else 0
+
+            # -------------------------
+            # system
+            # -------------------------
+            log.system = None
+            parts = raw.split("[")
+            for p in parts:
+                if "." in p and "]" in p:
+                    log.system = p.split("]")[0].split(".")[-1]
+                    break
+
+            # -------------------------
+            # equipment (faster than next())
+            # -------------------------
+            eqp = None
+            for eq in self.KNOWN_EQUIPMENTS:
+                if eq in raw:
+                    eqp = eq
+                    break
+
+            log.equipment = eqp
+            if eqp:
+                eqp_set.add(eqp)
+
+            # -------------------------
+            # dynamic items
+            # -------------------------
+            item_code = self.extract_item_code(raw)
+            if item_code:
+                base, suffix = self.split_item_code(item_code)
+                if suffix:
+                    dynamic_items.setdefault(base, set()).add(suffix)
+
+            # 🔥 store tuple for fast sort later
+            logs_with_ts.append((ts_val, log))
+
+        # -----------------------------
+        # 🔥 SORT once using timestamp (FAST)
+        # -----------------------------
+        logs_with_ts.sort(key=lambda x: x[0])
+
+        # -----------------------------
+        # 🔥 UNPACK (aligned lists)
+        # -----------------------------
+        self.variable_timestamps = [ts for ts, _ in logs_with_ts]
+        self.variable_logs = [log for _, log in logs_with_ts]
+
+        # -----------------------------
+        # equipment result
+        # -----------------------------
+        if len(eqp_set) > 1:
+            print("⚠ Multiple equipments detected:", eqp_set)
+
+        self.current_equipment = next(iter(eqp_set), None)
+
+        # -----------------------------
+        # DB rebuild
+        # -----------------------------
+        self.db.rebuild_for_equipment(
+            self.current_equipment,
+            dynamic_items
+        )
+
+        # -----------------------------
+        # Continue normal flow
+        # -----------------------------
         self.display_logs(self.variable_logs)
         self.update_period_from_logs()
         self.build_system_checkboxes()
         self.build_sequences()
         self.populate_sequence_tree()
         self.build_item_list()
-
-    def load_br_log(self, path):
-        self.br_logs = load_log_file(path)
-        self.br_tab.load_full_logs(self.br_logs)
 
     # -------------------
     # Timestamp + System
@@ -204,12 +299,7 @@ class LogViewer(QMainWindow):
     # Period Handling
     # -------------------
     def update_period_from_logs(self):
-        times = []
-
-        for log in self.variable_logs:
-            ts = self.extract_timestamp(log.raw)
-            if ts:
-                times.append(ts)
+        times = [log.ts for log in self.variable_logs if log.ts]
 
         if not times:
             return
@@ -283,8 +373,10 @@ class LogViewer(QMainWindow):
         # -------------------
         # Search
         # -------------------
-    def search_logs(self):
+    
 
+    def search_logs(self):
+        import bisect
         keyword = self.search_input.text().strip()
         keyword_lower = keyword.casefold()
 
@@ -301,34 +393,39 @@ class LogViewer(QMainWindow):
             return
 
         # ------------------------------------
-        # Filter VARIABLE logs (FAST)
+        # FAST TIME FILTER (🔥 binary search)
+        # ------------------------------------
+        start_ts = start.timestamp()
+        end_ts = end.timestamp()
+
+        left = bisect.bisect_left(self.variable_timestamps, start_ts)
+        right = bisect.bisect_right(self.variable_timestamps, end_ts)
+
+        subset = self.variable_logs[left:right]
+
+        # ------------------------------------
+        # Filter subset only (FAST)
         # ------------------------------------
         result = []
 
-        for log in self.variable_logs:
+        for log in subset:
 
-            # ✅ use cached values
             if log.system not in active:
                 continue
 
-            if log.ts and not (start <= log.ts <= end):
-                continue
-
-            if keyword_lower and keyword_lower not in log.raw_lower:
-                continue
+            if keyword_lower:
+                if keyword_lower not in log.raw_lower:
+                    continue
 
             result.append(log)
 
         self.display_logs(result)
 
         # ------------------------------------
-        # Filter BR logs (OPTIMIZED)
+        # BR filtering (OPTIMIZED)
         # ------------------------------------
-        if not self.br_tab.full_br_logs:
+        if not self.br_tab.br_calls:
             return
-
-        start_ts = start.timestamp()
-        end_ts = end.timestamp()
 
         if not keyword:
             self.br_tab.show_brs_in_timerange(start_ts, end_ts)
@@ -363,23 +460,21 @@ class LogViewer(QMainWindow):
         self.sequences.clear()
         active = {}
 
-        for idx, log in enumerate(self.variable_logs):
-            raw = log.raw
-            ts = self.extract_timestamp(raw)
+        for log in self.variable_logs:
+
+            ts = log.ts
             if not ts:
                 continue
 
-            item, signal = self.parse_item_signal(raw)
-            val = self.parse_value(raw)
+            item, signal = self.parse_item_signal(log.raw)
+            val = self.parse_value(log.raw)
 
             if not item or not signal or not val:
                 continue
 
-            # Trigger ON
             if signal == "I_B_TRIGGER_REPORT" and val == "ON":
                 active[item] = ts
 
-            # CONF OFF = sequence end
             elif signal == "O_B_TRIGGER_REPORT_CONF" and val == "OFF":
                 if item in active:
                     st = active.pop(item)
@@ -388,7 +483,8 @@ class LogViewer(QMainWindow):
     def populate_sequence_tree(self):
         self.seq_tree.clear()
 
-        for item_code, seqs in self.sequences.items():
+        # ✅ alphabetical sort by item_code
+        for item_code, seqs in sorted(self.sequences.items(), key=lambda x: x[0]):
 
             item_name = self.db.get_item_name(item_code)
             display_text = item_name if item_name else item_code
@@ -402,9 +498,7 @@ class LogViewer(QMainWindow):
                     [st.strftime("%Y-%m-%d %H:%M:%S")]
                 )
 
-                # Store time range instead of index list
                 child.setData(0, Qt.UserRole, (st, et))
-
                 parent.addChild(child)
 
     def on_sequence_clicked(self, item):
@@ -428,28 +522,31 @@ class LogViewer(QMainWindow):
         self.search_input.clear()
         self.search_input.blockSignals(False)
 
+        self.update_period_from_logs()
+
         st_ts = int(st.timestamp())
         et_ts = int(et.timestamp())
 
         # ---------------------------------
-        # 1️⃣ Show variable logs for sequence
+        # 1️⃣ FAST variable log filtering (🔥 binary search)
         # ---------------------------------
+        import bisect
+
+        left = bisect.bisect_left(self.variable_timestamps, st_ts)
+        right = bisect.bisect_right(self.variable_timestamps, et_ts)
+
         subset = []
 
-        for log in self.variable_logs:
-            ts = self.extract_timestamp(log.raw)
+        for log in self.variable_logs[left:right]:
             parsed_item, _ = self.parse_item_signal(log.raw)
 
-            if ts:
-                ts_val = int(ts.timestamp())
-
-                if parsed_item == item_code and st_ts <= ts_val <= et_ts:
-                    subset.append(log)
+            if parsed_item == item_code:
+                subset.append(log)
 
         self.display_logs(subset)
 
         # ---------------------------------
-        # 2️⃣ Reset BR view to FULL list (background only)
+        # 2️⃣ Reset BR view to FULL list
         # ---------------------------------
         if self.br_tab.br_calls:
             self.br_tab.show_all_brs()
@@ -463,7 +560,7 @@ class LogViewer(QMainWindow):
         expected_brs = set(self.db.get_brs_for_item(item_code))
 
         # ---------------------------------
-        # 3️⃣ Try highlighting expected BRs
+        # 3️⃣ Highlight expected BRs in range
         # ---------------------------------
         if expected_brs:
 
@@ -474,7 +571,6 @@ class LogViewer(QMainWindow):
             ]
 
             if executions_to_highlight:
-                # ✅ DO NOT switch tabs — just store for later
                 if self.left_tabs.currentWidget() == self.br_tab:
                     self.br_tab.highlight_br_executions(executions_to_highlight)
                 else:
@@ -504,15 +600,13 @@ class LogViewer(QMainWindow):
             if item_code:
                 items.add(item_code)
 
+        # ✅ alphabetical sort
         for item_code in sorted(items):
 
-            # Get DB name
             item_name = self.db.get_item_name(item_code)
             display_text = item_name if item_name else item_code
 
             list_item = QListWidgetItem(display_text)
-
-            #  Store real item_code internally
             list_item.setData(Qt.UserRole, item_code)
 
             self.item_list.addItem(list_item)
@@ -533,7 +627,7 @@ class LogViewer(QMainWindow):
         matched = []
 
         for log in self.br_logs:
-            ts = self.extract_timestamp(log.raw)
+            ts = log.ts
             if not ts:
                 continue
 
@@ -568,6 +662,8 @@ class LogViewer(QMainWindow):
         self.search_input.clear()
         self.search_input.blockSignals(False)
 
+        self.update_period_from_logs()
+
         self.display_logs(self.variable_logs)
 
         target = self.log_list.item(idx)
@@ -587,7 +683,8 @@ class LogViewer(QMainWindow):
         # Save timestamp for BR jump
         # ----------------------------
         log = self.variable_logs[idx]
-        ts = self.extract_timestamp(log.raw)
+        ts = log.ts
+
 
         if ts:
             self.pending_br_jump_ts = ts.timestamp()
@@ -599,6 +696,11 @@ class LogViewer(QMainWindow):
     def on_item_double_clicked(self, item_widget):
         data = item_widget.data(Qt.UserRole)
 
+        self.search_input.blockSignals(True)
+        self.search_input.clear()
+        self.search_input.blockSignals(False)
+
+        self.update_period_from_logs()
         # -----------------------
         # BR tab active
         # -----------------------
@@ -655,7 +757,7 @@ class LogViewer(QMainWindow):
         timestamps = []
 
         for log in visible_logs:
-            ts = self.extract_timestamp(log.raw)
+            ts = log.ts
             if ts:
                 timestamps.append(ts)
 
@@ -796,7 +898,7 @@ class LogViewer(QMainWindow):
 
             log = self.variable_logs[idx]
 
-            log_ts = self.extract_timestamp(log.raw)
+            log_ts = log.ts
             if not log_ts:
                 continue
 
@@ -809,9 +911,7 @@ class LogViewer(QMainWindow):
                 closest_item = item
 
         if closest_item:
-
             self.left_tabs.setCurrentWidget(self.log_list)
-
             self.log_list.scrollToItem(closest_item, QListWidget.PositionAtCenter)
             self.log_list.setCurrentItem(closest_item)
 
@@ -821,6 +921,41 @@ class LogViewer(QMainWindow):
 
     def _execute_search(self):
         self.search_logs()
+
+    def extract_equipment_from_raw(self, raw):
+        """
+        Detect equipment by checking known equipment codes inside raw string.
+        Example:
+        [D1EROL101.RollMapElm] → ROL
+        """
+        raw_upper = raw.upper()
+
+        for eqp in self.KNOWN_EQUIPMENTS:
+            if eqp in raw_upper:
+                return eqp
+
+        return None
+
+    def extract_item_code(self, raw):
+        """
+        Extract:
+        [G2_1_CARR_ID_RPT_01:I_B_TRIGGER_REPORT] → G2_1_CARR_ID_RPT_01
+        """
+        try:
+            return raw.split("[")[-1].split("]")[0].split(":")[0]
+        except:
+            return None
+
+
+    def split_item_code(self, item_code):
+        """
+        G2_1_CARR_ID_RPT_01 → (G2_1_CARR_ID_RPT, 01)
+        """
+        match = re.match(r"(.+?)_(\d+)$", item_code)
+        if match:
+            return match.group(1), match.group(2)
+        return item_code, None
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
