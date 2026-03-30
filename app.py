@@ -6,7 +6,7 @@ from datetime import datetime
 from PySide6.QtWidgets import (
     QApplication, QWidget, QListWidget, QListWidgetItem,
     QHBoxLayout, QLabel, QVBoxLayout, QMainWindow,
-    QFileDialog, QLineEdit, QPushButton, QCheckBox,
+    QFileDialog, QLineEdit, QPushButton,
     QTabWidget, QTreeWidget, QTreeWidgetItem
 )
 from PySide6.QtGui import QAction
@@ -49,9 +49,6 @@ class LogViewer(QMainWindow):
         self.update_period_button()
         self.period_button.clicked.connect(self.open_period_dialog)
 
-        self.system_layout = QHBoxLayout()
-        self.system_checkboxes = {}
-
         top = QVBoxLayout()
 
         row = QHBoxLayout()
@@ -61,7 +58,6 @@ class LogViewer(QMainWindow):
         row.addWidget(self.period_button)
 
         top.addLayout(row)
-        top.addLayout(self.system_layout)
 
         # -------------------
         # Variable Log List
@@ -271,7 +267,6 @@ class LogViewer(QMainWindow):
         # -----------------------------
         self.display_logs(self.variable_logs)
         self.update_period_from_logs()
-        self.build_system_checkboxes()
         self.build_sequences()
         self.populate_sequence_tree()
         self.build_item_list()
@@ -322,30 +317,6 @@ class LogViewer(QMainWindow):
             self.search_logs()
 
     # -------------------
-    # System Checkboxes
-    # -------------------
-    def build_system_checkboxes(self):
-        while self.system_layout.count():
-            w = self.system_layout.takeAt(0).widget()
-            if w:
-                w.deleteLater()
-
-        self.system_checkboxes.clear()
-
-        systems = {
-            self.extract_system(l.raw)
-            for l in self.variable_logs
-            if self.extract_system(l.raw)
-        }
-
-        for s in sorted(systems):
-            cb = QCheckBox(s)
-            cb.setChecked(True)
-            cb.stateChanged.connect(self.search_logs)
-            self.system_layout.addWidget(cb)
-            self.system_checkboxes[s] = cb
-
-    # -------------------
     # Display Logs
     # -------------------
     def display_logs(self, logs):
@@ -383,15 +354,6 @@ class LogViewer(QMainWindow):
         start = self.period_start.toPython()
         end = self.period_end.toPython()
 
-        active = {
-            s for s, c in self.system_checkboxes.items()
-            if c.isChecked()
-        }
-
-        if not active:
-            self.display_logs([])
-            return
-
         # ------------------------------------
         # FAST TIME FILTER (🔥 binary search)
         # ------------------------------------
@@ -409,9 +371,6 @@ class LogViewer(QMainWindow):
         result = []
 
         for log in subset:
-
-            if log.system not in active:
-                continue
 
             if keyword_lower:
                 if keyword_lower not in log.raw_lower:
