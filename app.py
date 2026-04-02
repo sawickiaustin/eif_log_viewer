@@ -7,16 +7,17 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QListWidget, QListWidgetItem,
     QHBoxLayout, QLabel, QVBoxLayout, QMainWindow,
     QFileDialog, QLineEdit, QPushButton,
-    QTabWidget, QTreeWidget, QTreeWidgetItem
+    QTabWidget, QTreeWidget, QTreeWidgetItem, QListView
 )
 from PySide6.QtGui import QAction
-from PySide6.QtCore import QDateTime, Qt
+from PySide6.QtCore import QDateTime, Qt, QAbstractListModel, QModelIndex
 
 from parser import load_log_file
 from period_dialog import PeriodDialog
 from br_tab import BRTab
 from db_manager import DBManager
 from PySide6.QtCore import QTimer
+from model import LogListModel
 
 class LogViewer(QMainWindow):
     def __init__(self):
@@ -26,6 +27,10 @@ class LogViewer(QMainWindow):
         self.resize(1200, 800)
 
         self.KNOWN_EQUIPMENTS = ["MIX", "COT", "ROL", "RWD", "TRS"]
+
+        self.br_list_built = False
+        self.item_list_built = False
+        self.item_list_mode = None 
 
         # Separate storage
         self.variable_logs = []
@@ -62,9 +67,13 @@ class LogViewer(QMainWindow):
         # -------------------
         # Variable Log List
         # -------------------
-        self.log_list = QListWidget()
-        self.log_list.itemDoubleClicked.connect(self.jump_to_log)
+        self.log_list = QListView()
+        self.log_list.doubleClicked.connect(self.jump_to_log)
         self.pending_br_jump_ts = None
+        self.log_list.setUniformItemSizes(True)
+
+        self.log_model = LogListModel()
+        self.log_list.setModel(self.log_model)
 
         # -------------------
         # BR Tab (log viewer)
@@ -148,7 +157,9 @@ class LogViewer(QMainWindow):
         logs = load_log_file(path)
         self.br_logs = logs
 
-        # send to BR tab
+        # 🔥 reset cache flag
+        self.br_list_built = False
+
         self.br_tab.load_full_logs(logs)
 
         print(f"Loaded BR log: {len(logs)} lines")
@@ -172,23 +183,20 @@ class LogViewer(QMainWindow):
     def load_variable_log(self, path):
         self.variable_logs = load_log_file(path)
 
+        # 🔥 reset cache flags
+        self.item_list_built = False
+
         dynamic_items = {}
         eqp_set = set()
 
-        logs_with_ts = []  # 🔥 (ts_val, log)
+        logs_with_ts = []
 
-        # -----------------------------
-        # 🔥 SINGLE PASS (parse + cache everything)
-        # -----------------------------
         for idx, log in enumerate(self.variable_logs):
             raw = log.raw
 
             log.original_index = idx
             log.raw_lower = raw.casefold()
 
-            # -------------------------
-            # timestamp (FAST manual parse)
-            # -------------------------
             try:
                 ts = datetime(
                     int(raw[0:4]), int(raw[5:7]), int(raw[8:10]),
@@ -200,9 +208,6 @@ class LogViewer(QMainWindow):
             log.ts = ts
             ts_val = ts.timestamp() if ts else 0
 
-            # -------------------------
-            # system
-            # -------------------------
             log.system = None
             parts = raw.split("[")
             for p in parts:
@@ -210,9 +215,6 @@ class LogViewer(QMainWindow):
                     log.system = p.split("]")[0].split(".")[-1]
                     break
 
-            # -------------------------
-            # equipment (faster than next())
-            # -------------------------
             eqp = None
             for eq in self.KNOWN_EQUIPMENTS:
                 if eq in raw:
@@ -223,48 +225,29 @@ class LogViewer(QMainWindow):
             if eqp:
                 eqp_set.add(eqp)
 
-            # -------------------------
-            # dynamic items
-            # -------------------------
             item_code = self.extract_item_code(raw)
             if item_code:
                 base, suffix = self.split_item_code(item_code)
                 if suffix:
                     dynamic_items.setdefault(base, set()).add(suffix)
 
-            # 🔥 store tuple for fast sort later
             logs_with_ts.append((ts_val, log))
 
-        # -----------------------------
-        # 🔥 SORT once using timestamp (FAST)
-        # -----------------------------
         logs_with_ts.sort(key=lambda x: x[0])
 
-        # -----------------------------
-        # 🔥 UNPACK (aligned lists)
-        # -----------------------------
         self.variable_timestamps = [ts for ts, _ in logs_with_ts]
         self.variable_logs = [log for _, log in logs_with_ts]
 
-        # -----------------------------
-        # equipment result
-        # -----------------------------
         if len(eqp_set) > 1:
             print("⚠ Multiple equipments detected:", eqp_set)
 
         self.current_equipment = next(iter(eqp_set), None)
 
-        # -----------------------------
-        # DB rebuild
-        # -----------------------------
         self.db.rebuild_for_equipment(
             self.current_equipment,
             dynamic_items
         )
 
-        # -----------------------------
-        # Continue normal flow
-        # -----------------------------
         self.display_logs(self.variable_logs)
         self.update_period_from_logs()
         self.build_sequences()
@@ -320,30 +303,12 @@ class LogViewer(QMainWindow):
     # Display Logs
     # -------------------
     def display_logs(self, logs):
-        self.log_list.setUpdatesEnabled(False)
-        self.log_list.clear()
-
         if not logs:
-            self.log_list.addItem("⚠️ 결과 없음")
-            self.log_list.setUpdatesEnabled(True)
-            #self.br_tab.show_expected_brs([])
+            self.log_model.setLogs([])
             return
 
-        for log in logs:
-            item = QListWidgetItem(log.raw)
-            original_idx = getattr(log, "original_index", None)
-            item.setData(Qt.UserRole, original_idx)
-            self.log_list.addItem(item)
-
-        self.log_list.setUpdatesEnabled(True)
+        self.log_model.setLogs(logs)
         self.br_tab.clear_highlight()
-
-        # Centralized BR refresh
-        #self.refresh_br_for_visible_logs(logs)
-
-        # -------------------
-        # Search
-        # -------------------
     
 
     def search_logs(self):
@@ -559,9 +524,7 @@ class LogViewer(QMainWindow):
             if item_code:
                 items.add(item_code)
 
-        # ✅ alphabetical sort
         for item_code in sorted(items):
-
             item_name = self.db.get_item_name(item_code)
             display_text = item_name if item_name else item_code
 
@@ -605,17 +568,16 @@ class LogViewer(QMainWindow):
     # -------------------
     # Jump to Original Position
     # -------------------
-    def jump_to_log(self, item):
-
-        if not self.variable_logs:
+    def jump_to_log(self, index):
+        if not index.isValid():
             return
 
-        idx = item.data(Qt.UserRole)
+        idx = index.data(Qt.UserRole)
         if idx is None:
             return
 
         # ----------------------------
-        # Reset search
+        # Reset search (no re-trigger)
         # ----------------------------
         self.search_input.blockSignals(True)
         self.search_input.clear()
@@ -623,31 +585,44 @@ class LogViewer(QMainWindow):
 
         self.update_period_from_logs()
 
-        self.display_logs(self.variable_logs)
-
-        target = self.log_list.item(idx)
-        if not target:
-            return
-
-        self.log_list.scrollToItem(target, QListWidget.PositionAtCenter)
-        self.log_list.setCurrentItem(target)
+        # ----------------------------
+        # Ensure full log view
+        # ----------------------------
+        if self.log_model.logs != self.variable_logs:
+            self.display_logs(self.variable_logs)
 
         # ----------------------------
-        # Reset BR tree to FULL list
+        # Get model index
+        # ----------------------------
+        model_index = self.log_model.index(idx)
+        if not model_index.isValid():
+            return
+
+        view = self.log_list
+
+        # ----------------------------
+        # 🔥 CORRECT CENTER SCROLL (Qt-native)
+        # ----------------------------
+        from PySide6.QtCore import QTimer
+
+        def do_scroll():
+            view.scrollTo(model_index, QListView.PositionAtCenter)
+            view.setCurrentIndex(model_index)
+
+        QTimer.singleShot(0, do_scroll)
+
+        # ----------------------------
+        # Reset BR view
         # ----------------------------
         if self.br_tab.br_calls:
             self.br_tab.show_all_brs()
 
         # ----------------------------
-        # Save timestamp for BR jump
+        # Save timestamp for BR sync
         # ----------------------------
         log = self.variable_logs[idx]
-        ts = log.ts
-
-
-        if ts:
-            self.pending_br_jump_ts = ts.timestamp()
-
+        if log.ts:
+            self.pending_br_jump_ts = log.ts.timestamp()
 
     # -------------------
     # Item Double Click
@@ -794,13 +769,17 @@ class LogViewer(QMainWindow):
         # BR TAB OPENED
         # -----------------------
         if tab_text == "BR Logs":
-            self.build_br_list()
+
+            # 🔥 Only rebuild if mode changed
+            if self.item_list_mode != "br":
+                self.build_br_list()
+                self.item_list_mode = "br"
 
             if self.pending_br_highlight:
                 self.br_tab.highlight_br_executions(self.pending_br_highlight)
                 self.pending_br_highlight = None
 
-            elif self.pending_br_jump_ts:
+            elif self.pending_br_jump_ts is not None:
                 self.jump_br_view_to_timestamp(self.pending_br_jump_ts)
                 self.pending_br_jump_ts = None
 
@@ -809,7 +788,10 @@ class LogViewer(QMainWindow):
         # -----------------------
         else:
 
-            self.build_item_list()
+            # 🔥 Only rebuild if mode changed
+            if self.item_list_mode != "variable":
+                self.build_item_list()
+                self.item_list_mode = "variable"
 
             if self.pending_variable_jump:
                 self.jump_variable_view_to_timestamp(self.pending_variable_jump)
@@ -841,38 +823,54 @@ class LogViewer(QMainWindow):
             tree.setCurrentItem(closest_item)
 
     def jump_variable_view_to_timestamp(self, ts):
+        if not self.variable_logs:
+            return
 
         target_ts = int(ts.timestamp())
 
-        closest_item = None
+        closest_idx = None
         closest_diff = float("inf")
 
-        for i in range(self.log_list.count()):
-
-            item = self.log_list.item(i)
-            idx = item.data(Qt.UserRole)
-
-            if idx is None:
-                continue
-
-            log = self.variable_logs[idx]
+        # ----------------------------
+        # Find closest log index
+        # ----------------------------
+        for i, log in enumerate(self.variable_logs):
 
             log_ts = log.ts
             if not log_ts:
                 continue
 
             log_sec = int(log_ts.timestamp())
-
             diff = abs(log_sec - target_ts)
 
             if diff < closest_diff:
                 closest_diff = diff
-                closest_item = item
+                closest_idx = i
 
-        if closest_item:
-            self.left_tabs.setCurrentWidget(self.log_list)
-            self.log_list.scrollToItem(closest_item, QListWidget.PositionAtCenter)
-            self.log_list.setCurrentItem(closest_item)
+        if closest_idx is None:
+            return
+
+        model_index = self.log_model.index(closest_idx)
+        if not model_index.isValid():
+            return
+
+        view = self.log_list
+
+        # ----------------------------
+        # Switch to correct tab first
+        # ----------------------------
+        self.left_tabs.setCurrentWidget(self.log_list)
+
+        # ----------------------------
+        # 🔥 CORRECT CENTER SCROLL
+        # ----------------------------
+        from PySide6.QtCore import QTimer
+
+        def do_scroll():
+            view.scrollTo(model_index, QListView.PositionAtCenter)
+            view.setCurrentIndex(model_index)
+
+        QTimer.singleShot(0, do_scroll)
 
 
     def schedule_search(self):
