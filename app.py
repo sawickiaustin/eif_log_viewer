@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QListWidget, QListWidgetItem,
     QHBoxLayout, QLabel, QVBoxLayout, QMainWindow,
     QFileDialog, QLineEdit, QPushButton,
-    QTabWidget, QTreeWidget, QTreeWidgetItem, QListView
+    QTabWidget, QTreeWidget, QTreeWidgetItem, QListView,QMessageBox
 )
 from PySide6.QtGui import QAction
 from PySide6.QtCore import QDateTime, Qt, QAbstractListModel, QModelIndex
@@ -139,17 +139,46 @@ class LogViewer(QMainWindow):
     # -------------------
     # Menu
     # -------------------
+    def open_variable_and_br_log(self):
+        # -------------------------
+        # Select Variable file
+        # -------------------------
+        var_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Variable Log", "", "Log Files (*.log)"
+        )
+
+        if not var_path:
+            return
+
+        # -------------------------
+        # Select BR file
+        # -------------------------
+        br_path, _ = QFileDialog.getOpenFileName(
+            self, "Select BR Log", "", "Log Files (*.log)"
+        )
+
+        if not br_path:
+            return
+
+        # -------------------------
+        # Load BOTH (important order)
+        # -------------------------
+        self.load_variable_log(var_path)
+        self.load_br_log(br_path)
+
     def create_menu(self):
         bar = self.menuBar()
         file_menu = bar.addMenu("File")
 
-        open_var_action = QAction("Open Variable Log...", self)
+        # 1️⃣ Variable only
+        open_var_action = QAction("Add Variable Log...", self)
         open_var_action.triggered.connect(self.open_variable_log)
         file_menu.addAction(open_var_action)
 
-        open_br_action = QAction("Open BR Log...", self)
-        open_br_action.triggered.connect(self.open_br_log)
-        file_menu.addAction(open_br_action)
+        # 2️⃣ Variable + BR together
+        open_pair_action = QAction("Add Variable + BR Log...", self)
+        open_pair_action.triggered.connect(self.open_variable_and_br_log)
+        file_menu.addAction(open_pair_action)
 
         file_menu.addSeparator()
 
@@ -160,6 +189,24 @@ class LogViewer(QMainWindow):
 
     def load_br_log(self, path):
         logs = load_log_file(path)
+
+        # 🔥 VALIDATION (must contain BIZRULE or REQUESTQ)
+        valid = False
+
+        for log in logs[:100]:
+            raw = log.raw
+            if "BIZRULE" in raw or "(REQUESTQ)" in raw:
+                valid = True
+                break
+
+        if not valid:
+            QMessageBox.critical(
+                self,
+                "Invalid BR Log",
+                "The selected file is not a valid BR log.\n"
+            )
+            return
+
         self.br_logs = logs
 
         # 🔥 reset cache flag
@@ -186,8 +233,39 @@ class LogViewer(QMainWindow):
         if path:
             self.load_br_log(path)
 
+    def is_valid_log_line(self, raw):
+        if len(raw) < 19:
+            return False
+
+        # Check timestamp
+        try:
+            datetime.strptime(raw[:19], "%Y-%m-%d %H:%M:%S")
+        except:
+            return False
+
+        # Must contain structured block
+        if "[" not in raw or "]" not in raw:
+            return False
+
+        return True
+
     def load_variable_log(self, path):
         self.variable_logs = load_log_file(path)
+
+        # VALIDATION
+        invalid_count = 0
+
+        for log in self.variable_logs[:50]:  # check first 50 lines only (fast)
+            if not self.is_valid_log_line(log.raw):
+                invalid_count += 1
+
+        if invalid_count > 0:
+            QMessageBox.critical(
+                self,
+                "Invalid Variable Log",
+                f"The selected file is not a valid Variable log.\n"
+            )
+            return
 
         # 🔥 reset cache flags
         self.item_list_built = False
@@ -510,16 +588,16 @@ class LogViewer(QMainWindow):
         self.display_logs(subset)
 
         # ---------------------------------
-        # 2️⃣ Reset BR view to FULL list
-        # ---------------------------------
-        if self.br_tab.br_calls:
-            self.br_tab.show_all_brs()
-
-        # ---------------------------------
         # Stop if no BR file loaded
         # ---------------------------------
         if not self.br_tab.br_calls:
             return
+
+        # ---------------------------------
+        # 2️⃣ Reset BR view to FULL list
+        # ---------------------------------
+        if self.br_tab.br_calls:
+            self.br_tab.show_all_brs()
 
         expected_brs = set(self.db.get_brs_for_item(item_code))
 
@@ -684,12 +762,10 @@ class LogViewer(QMainWindow):
             if not self.br_tab.br_calls:
                 return
 
-            filtered = [
-                e for e in self.br_tab.br_calls
-                if e["br_name"] == data
-            ]
+            filtered = self.br_tab.br_name_index.get(data, [])
 
             self.br_tab.populate_tree_from_executions(filtered)
+            self.reset_variable_view()
             return
 
         # -----------------------
@@ -699,7 +775,7 @@ class LogViewer(QMainWindow):
         if not item_code:
             return
 
-        # 🔥 O(1) lookup instead of scanning all logs
+        # O(1) lookup instead of scanning all logs
         filtered = self.item_index.get(item_code, [])
 
         self.display_logs(filtered)
@@ -786,6 +862,10 @@ class LogViewer(QMainWindow):
     def reset_br_view(self):
         if self.br_tab.full_br_logs:
             self.br_tab.show_all_brs()
+
+    def reset_variable_view(self):
+        if self.variable_logs:
+            self.display_logs(self.variable_logs)
 
     def build_br_list(self, force=False):
         self.item_list.setUpdatesEnabled(False)   # 🔥 prevent UI redraw lag
@@ -964,7 +1044,6 @@ class LogViewer(QMainWindow):
         if match:
             return match.group(1), match.group(2)
         return item_code, None
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

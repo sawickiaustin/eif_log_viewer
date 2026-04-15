@@ -27,6 +27,8 @@ class BRTab(QWidget):
         self.br_calls = []
         self.br_index = {}
         self.txn_map = {}
+        self.br_name_index = {}
+        self.execution_item_map = {}
 
         self.execution_by_second = {}
         self.highlighted_item = None
@@ -102,6 +104,7 @@ class BRTab(QWidget):
     def build_br_calls(self, logs):
 
         self.br_calls = []
+        self.br_name_index.clear()   # 🔥 reset index
         pending = {}
 
         uuid_re = re.compile(r"(?:ELTR|ASSY)\((.*?)\)")
@@ -237,6 +240,9 @@ class BRTab(QWidget):
 
                 self.br_calls.append(execution)
 
+                # 🔥 BUILD INDEX (O(1) lookup later)
+                self.br_name_index.setdefault(execution["br_name"], []).append(execution)
+
             i += 1
 
     # ============================================================
@@ -253,6 +259,7 @@ class BRTab(QWidget):
 
         self.tree.setUpdatesEnabled(False)
         self.tree.clear()
+        self.execution_item_map.clear()
 
         for execution in executions:
 
@@ -260,6 +267,10 @@ class BRTab(QWidget):
 
             root_item = QTreeWidgetItem([root_text])
             root_item.setData(0, Qt.UserRole, execution)
+
+            # 🔥 STORE DIRECT MAPPING (FAST LOOKUP)
+            key = (execution["timestamp"].timestamp(), execution["br_name"])
+            self.execution_item_map[key] = root_item
 
             root_item.addChild(QTreeWidgetItem(["Loading..."]))
             self.tree.addTopLevelItem(root_item)
@@ -367,30 +378,28 @@ class BRTab(QWidget):
         return results
 
     def highlight_br_executions(self, executions):
-        """Highlight multiple BR executions in the tree based on timestamp AND BR name"""
         tree = self.tree
 
         # Clear previous highlights
         if self.highlighted_item:
             for item in self.highlighted_item:
-                item.setBackground(0, Qt.white)
+                try:
+                    item.setBackground(0, Qt.white)
+                except RuntimeError:
+                    pass
+
         self.highlighted_item = []
 
-        # Build a set of (timestamp, br_name) tuples to match
-        exec_set = {(e["timestamp"].timestamp(), e["br_name"]) for e in executions}
+        # 🔥 DIRECT LOOKUP (NO TREE SCAN)
+        for e in executions:
+            key = (e["timestamp"].timestamp(), e["br_name"])
+            item = self.execution_item_map.get(key)
 
-        for i in range(tree.topLevelItemCount()):
-            item = tree.topLevelItem(i)
-            exec_data = item.data(0, Qt.UserRole)
-            if not exec_data:
-                continue
-
-            key = (exec_data["timestamp"].timestamp(), exec_data["br_name"])
-            if key in exec_set:
+            if item:
                 item.setBackground(0, Qt.yellow)
                 self.highlighted_item.append(item)
 
-        # Scroll to the first highlighted item (optional)
+        # Scroll to first
         if self.highlighted_item:
             tree.scrollToItem(self.highlighted_item[0], QTreeWidget.PositionAtCenter)
 
