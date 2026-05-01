@@ -107,7 +107,7 @@ class BRTab(QWidget):
         self.br_name_index.clear()   # 🔥 reset index
         pending = {}
 
-        uuid_re = re.compile(r"(?:ELTR|ASSY)\((.*?)\)")
+        uuid_re = re.compile(r"(?:ELTR\w*|ASSY\w*)\((.*?)\)")
 
         logs_local = logs
         log_count = len(logs_local)

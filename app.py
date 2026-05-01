@@ -1,7 +1,7 @@
 ﻿#app.py
 import sys
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from PySide6.QtWidgets import (
     QApplication, QWidget, QListWidget, QListWidgetItem,
@@ -485,15 +485,53 @@ class LogViewer(QMainWindow):
             return None, None
 
     def parse_value(self, raw):
-        if ": ON" in raw:
-            return "ON"
-        if ": OFF" in raw:
-            return "OFF"
+        try:
+            if " : " in raw:
+                return raw.rsplit(" : ", 1)[1].strip()
+        except:
+            pass
+
         return None
 
+    def merge_overlapping_sequences(self):
+        for item, seqs in self.sequences.items():
+
+            # 🔥 only merge B sequences
+            b_seqs = [s for s in seqs if s["type"] == "B"]
+            other_seqs = [s for s in seqs if s["type"] != "B"]
+
+            if not b_seqs:
+                continue
+
+            # sort by start time
+            b_seqs.sort(key=lambda x: x["start"])
+
+            merged = []
+            current = b_seqs[0]
+
+            for nxt in b_seqs[1:]:
+
+                # 🔥 overlap or touching
+                if nxt["start"] <= current["end"]:
+                    current["end"] = max(current["end"], nxt["end"])
+                else:
+                    merged.append(current)
+                    current = nxt
+
+            merged.append(current)
+
+            # 🔥 rebuild list (keep W untouched)
+            self.sequences[item] = merged + other_seqs
+
     def build_sequences(self):
-        self.sequences.clear()
+        self.sequences = {}
+
         active = {}
+        # item -> {
+        #   "start": datetime,
+        #   "conf_on": bool,
+        #   "b_off": bool
+        # }
 
         for log in self.variable_logs:
 
@@ -504,44 +542,164 @@ class LogViewer(QMainWindow):
             item, signal = self.parse_item_signal(log.raw)
             val = self.parse_value(log.raw)
 
-            if not item or not signal or not val:
+            if not item or not signal:
                 continue
 
-            if signal == "I_B_TRIGGER_REPORT" and val == "ON":
-                active[item] = ts
+            # =====================================================
+            # 🟢 TYPE 2: W_TRIGGER_REPORT (instant)
+            # =====================================================
+            if "W_TRIGGER_REPORT" in signal:
+                    existing_seqs = self.sequences.get(item, [])
 
-            elif signal == "O_B_TRIGGER_REPORT_CONF" and val == "OFF":
-                if item in active:
-                    st = active.pop(item)
-                    self.sequences.setdefault(item, []).append((st, ts))
+                    buffer_sec = 1
+
+                    # 🔥 Skip if this W falls inside any B sequence +- buffer time
+                    inside_b = any(
+                        s["type"] == "B" and (s["start"]- timedelta(seconds=buffer_sec)) <= ts <= (s["end"]+ timedelta(seconds=buffer_sec))
+                        for s in existing_seqs
+                    )
+
+                    if inside_b:
+                        continue
+
+                    # Prevent exact duplicates
+                    duplicate = any(
+                        s["type"] == "W" and s["start"] == ts
+                        for s in existing_seqs
+                    )
+
+                    if duplicate:
+                        continue
+
+                    self.sequences.setdefault(item, []).append({
+                        "start": ts,
+                        "end": ts,
+                        "type": "W"
+                    })
+                    continue
+
+            # =====================================================
+            # 🔴 TYPE 1: B_TRIGGER_REPORT (strict 4-step sequence)
+            # =====================================================
+
+            # 1️⃣ START → B_TRIGGER_REPORT: ON (NOT CONF)
+            if ("B_TRIGGER_REPORT_CONF" not in signal
+                and "B_TRIGGER_REPORT" in signal
+                and val == "ON"):
+
+                active[item] = {
+                    "start": ts,
+                    "conf_on": False,
+                    "b_off": False
+                }
+                continue
+
+            if item not in active:
+                continue
+
+            seq = active[item]
+
+            # 2️⃣ CONF ON
+            if "B_TRIGGER_REPORT_CONF" in signal and val == "ON":
+                seq["conf_on"] = True
+                continue
+
+            # 3️⃣ B OFF
+            if ("B_TRIGGER_REPORT_CONF" not in signal
+                and "B_TRIGGER_REPORT" in signal
+                and val == "OFF"):
+
+                seq["b_off"] = True
+                continue
+
+            # 4️⃣ CONF OFF → COMPLETE
+            if "B_TRIGGER_REPORT_CONF" in signal and val == "OFF":
+
+                if seq["conf_on"] and seq["b_off"]:
+
+                    buffer_sec = 1
+
+                    new_start = seq["start"] - timedelta(seconds=buffer_sec)
+                    new_end = ts + timedelta(seconds=buffer_sec)
+
+                    existing = self.sequences.setdefault(item, [])
+
+                    # 🔥 Remove ANY W inside this B window
+                    existing[:] = [
+                        s for s in existing
+                        if not (
+                            s["type"] == "W"
+                            and new_start <= s["start"] <= new_end
+                        )
+                    ]
+
+                    existing.append({
+                        "start": seq["start"],
+                        "end": ts,
+                        "type": "B"
+                    })
+
+                active.pop(item, None)
+
+        #self.merge_overlapping_sequences()
 
     def populate_sequence_tree(self, force=False):
         if hasattr(self, "sequence_tree_built") and self.sequence_tree_built and not force:
-            return  # ✅ skip rebuild
+            return
 
         self.seq_tree.setUpdatesEnabled(False)
         self.seq_tree.clear()
 
-        for item_code, seqs in sorted(self.sequences.items(), key=lambda x: x[0]):
+        group_nodes = {}
+
+        for item_code, seqs in sorted(self.sequences.items()):
+
+            category = self.db.get_item_category(item_code)
+
+            if category not in group_nodes:
+                group_nodes[category] = QTreeWidgetItem([category])
+                self.seq_tree.addTopLevelItem(group_nodes[category])
+
+            parent_group = group_nodes[category]
 
             item_name = self.db.get_item_name(item_code)
             display_text = item_name if item_name else item_code
 
             parent = QTreeWidgetItem([display_text])
             parent.setData(0, Qt.UserRole, item_code)
-            self.seq_tree.addTopLevelItem(parent)
+            parent_group.addChild(parent)
 
-            for st, et in seqs:
-                child = QTreeWidgetItem(
-                    [st.strftime("%Y-%m-%d %H:%M:%S")]
-                )
+            # sort by start
+            sorted_seqs = sorted(seqs, key=lambda x: x["start"])
 
-                child.setData(0, Qt.UserRole, (st, et))
+            for seq in sorted_seqs:
+                st = seq["start"]
+
+                label = f"[{seq['type']}] {st.strftime('%Y-%m-%d %H:%M:%S')}"
+
+                child = QTreeWidgetItem([label])
+
+                # 🔥 ALWAYS store dict (critical fix)
+                child.setData(0, Qt.UserRole, seq)
+
                 parent.addChild(child)
 
         self.seq_tree.setUpdatesEnabled(True)
+        self.sequence_tree_built = True
 
-        self.sequence_tree_built = True  # ✅ cache built
+    from datetime import datetime
+
+    def to_datetime_safe(self, value):
+        if isinstance(value, datetime):
+            return value
+
+        if isinstance(value, str):
+            try:
+                return datetime.strptime(value[:19], "%Y-%m-%d %H:%M:%S")
+            except:
+                return None
+
+        return None
 
     def on_sequence_clicked(self, item):
         parent = item.parent()
@@ -549,16 +707,25 @@ class LogViewer(QMainWindow):
             return
 
         item_code = parent.data(0, Qt.UserRole)
-        time_range = item.data(0, Qt.UserRole)
-        if not time_range:
+        seq = item.data(0, Qt.UserRole)
+
+        if not isinstance(seq, dict):
             return
 
-        st, et = time_range
+        st = seq["start"]
+        et = seq["end"]
+
+        if seq["type"] == "B":
+            buffer_sec = 1
+
+            st = seq["start"] - timedelta(seconds=buffer_sec)
+            et = seq["end"] + timedelta(seconds=buffer_sec)
+
         if not st or not et:
             return
 
         # ---------------------------------
-        # 0️⃣ Clear current search
+        # Clear search
         # ---------------------------------
         self.search_input.blockSignals(True)
         self.search_input.clear()
@@ -570,46 +737,118 @@ class LogViewer(QMainWindow):
         et_ts = int(et.timestamp())
 
         # ---------------------------------
-        # 1️⃣ FAST variable log filtering (🔥 binary search)
+        # FAST slice by time
         # ---------------------------------
         import bisect
 
         left = bisect.bisect_left(self.variable_timestamps, st_ts)
         right = bisect.bisect_right(self.variable_timestamps, et_ts)
 
-        subset = []
+        logs_in_range = self.variable_logs[left:right]
 
-        for log in self.variable_logs[left:right]:
-            parsed_item, _ = self.parse_item_signal(log.raw)
+        # =====================================================
+        # 🔴 B SEQUENCE HANDLING
+        # =====================================================
+        if seq["type"] == "B":
 
-            if parsed_item == item_code:
-                subset.append(log)
+            main_sequence = []
+            step = 0
 
-        self.display_logs(subset)
+            for log in logs_in_range:
+                item, signal = self.parse_item_signal(log.raw)
+                val = self.parse_value(log.raw)
+
+                if item != item_code:
+                    continue
+
+                # STEP 1: B ON
+                if step == 0:
+                    if "B_TRIGGER_REPORT" in signal and "CONF" not in signal and val == "ON":
+                        main_sequence.append(log)
+                        step = 1
+                    continue
+
+                # STEP 2: CONF ON
+                elif step == 1:
+                    if "B_TRIGGER_REPORT_CONF" in signal and val == "ON":
+                        main_sequence.append(log)
+                        step = 2
+                    continue
+
+                # STEP 3: B OFF
+                elif step == 2:
+                    if "B_TRIGGER_REPORT" in signal and "CONF" not in signal and val == "OFF":
+                        main_sequence.append(log)
+                        step = 3
+                    continue
+
+                # STEP 4: CONF OFF
+                elif step == 3:
+                    if "B_TRIGGER_REPORT_CONF" in signal and val == "OFF":
+                        main_sequence.append(log)
+                        break  # done
+
+            # ---------------------------------
+            # Collect ALL other valid logs
+            # ---------------------------------
+            main_set = {log.original_index for log in main_sequence}
+
+            final_logs = []
+
+            for log in logs_in_range:
+                item, signal = self.parse_item_signal(log.raw)
+
+                if item != item_code:
+                    continue
+
+                # ✅ Always include the main sequence logs
+                if log.original_index in main_set:
+                    final_logs.append(log)
+                    continue
+
+                # ❌ Skip ANY extra B/CONF logs (outliers)
+                if "B_TRIGGER_REPORT" in signal:
+                    continue
+
+                # ✅ Include everything else (W, IDs, etc.)
+                final_logs.append(log)
+
+            # ---------------------------------
+            # Sort final logs by timestamp
+            # ---------------------------------
+            final_logs.sort(key=lambda x: x.ts or 0)
+
+            self.display_logs(final_logs)
+
+        # =====================================================
+        # 🟢 W SEQUENCE
+        # =====================================================
+        else:
+            subset = [
+                log for log in logs_in_range
+                if self.parse_item_signal(log.raw)[0] == item_code
+            ]
+            self.display_logs(subset)
 
         # ---------------------------------
-        # Stop if no BR file loaded
+        # BR handling (unchanged)
         # ---------------------------------
         if not self.br_tab.br_calls:
             return
 
-        # ---------------------------------
-        # 2️⃣ Reset BR view to FULL list
-        # ---------------------------------
-        if self.br_tab.br_calls:
-            self.br_tab.show_all_brs()
+        self.br_tab.show_all_brs()
 
         expected_brs = set(self.db.get_brs_for_item(item_code))
 
-        # ---------------------------------
-        # 3️⃣ Highlight expected BRs in range
-        # ---------------------------------
         if expected_brs:
+            buffer_sec = 1
+            start = st_ts - buffer_sec
+            end = et_ts + buffer_sec
 
             executions_to_highlight = [
                 e for e in self.br_tab.br_calls
                 if e["br_name"] in expected_brs
-                and st_ts <= int(e["timestamp"].timestamp()) <= et_ts
+                and start <= int(e["timestamp"].timestamp()) <= end
             ]
 
             if executions_to_highlight:
@@ -619,9 +858,6 @@ class LogViewer(QMainWindow):
                     self.pending_br_highlight = executions_to_highlight
                 return
 
-        # ---------------------------------
-        # 4️⃣ No BR found → prepare jump
-        # ---------------------------------
         if self.left_tabs.currentWidget() == self.br_tab:
             self.jump_br_view_to_timestamp(st_ts)
             self.br_tab.clear_highlight()
@@ -640,13 +876,31 @@ class LogViewer(QMainWindow):
         if not self.item_list_built_variable or force:
             self.items = sorted(self.item_index.keys())
 
-        for item_code in self.items:
-            item_name = self.db.get_item_name(item_code)
-            display_text = item_name if item_name else item_code
+        groups = {"EQP": [], "ROLLMAP": []}
 
-            list_item = QListWidgetItem(display_text)
-            list_item.setData(Qt.UserRole, item_code)
-            self.item_list.addItem(list_item)
+        for item_code in self.items:
+            category = self.db.get_item_category(item_code)
+            groups.setdefault(category, []).append(item_code)
+
+        # ----------------------------
+        # 🔥 BUILD UI
+        # ----------------------------
+        for category in ["EQP", "ROLLMAP", "RMS"]:
+            if not groups.get(category):
+                continue
+
+            # Header (non-clickable)
+            header = QListWidgetItem(f"[{category}]")
+            header.setFlags(Qt.NoItemFlags)
+            self.item_list.addItem(header)
+
+            for item_code in groups[category]:
+                item_name = self.db.get_item_name(item_code)
+                display_text = item_name if item_name else item_code
+
+                list_item = QListWidgetItem(display_text)
+                list_item.setData(Qt.UserRole, item_code)
+                self.item_list.addItem(list_item)
 
         self.item_list.setUpdatesEnabled(True)
 
@@ -735,6 +989,7 @@ class LogViewer(QMainWindow):
         # ----------------------------
         if self.br_tab.br_calls:
             self.br_tab.show_all_brs()
+            self.pending_br_highlight = None
 
         # ----------------------------
         # Save timestamp for BR sync
