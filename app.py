@@ -18,6 +18,7 @@ from br_tab import BRTab
 from db_manager import DBManager
 from PySide6.QtCore import QTimer
 from model import LogListModel
+from worker import VariableLogWorker
 
 class LogViewer(QMainWindow):
     def __init__(self):
@@ -135,6 +136,7 @@ class LogViewer(QMainWindow):
         self.db = DBManager()
 
         self.create_menu()
+        self.statusBar().showMessage("Ready")
 
     # -------------------
     # Menu
@@ -250,120 +252,58 @@ class LogViewer(QMainWindow):
         return True
 
     def load_variable_log(self, path):
-        self.variable_logs = load_log_file(path)
+        raw_logs = load_log_file(path)
 
-        # VALIDATION
-        invalid_count = 0
-
-        for log in self.variable_logs[:50]:  # check first 50 lines only (fast)
-            if not self.is_valid_log_line(log.raw):
-                invalid_count += 1
-
-        if invalid_count > 0:
-            QMessageBox.critical(
-                self,
-                "Invalid Variable Log",
-                f"The selected file is not a valid Variable log.\n"
-            )
-            return
-
-        # 🔥 reset cache flags
+        # Reset flags
         self.item_list_built = False
         self.sequence_tree_built = False
         self.item_list_built_variable = False
-
-        # 🔥 NEW: index
         self.item_index = {}
 
+        # Show a loading state so the UI doesn't look frozen
+        self.log_model.setLogs([])
+        self.statusBar().showMessage("Loading variable log…")
+
+        # Spin up worker
+        self._var_worker = VariableLogWorker(raw_logs)
+        self._var_worker.finished.connect(self._on_variable_log_ready)
+        self._var_worker.start()
+
+    def _on_variable_log_ready(self, sorted_logs, sorted_timestamps, item_index, current_equipment, skipped_count, sequences):
+        # Alert if >20% of lines were invalid
+        total_lines = len(sorted_logs) + skipped_count
+        if total_lines > 0 and (skipped_count / total_lines) > 0.2:
+            QMessageBox.warning(
+                self,
+                "Invalid Lines Detected",
+                f"Skipped {skipped_count:,} invalid lines ({skipped_count*100//total_lines}% of file).\n"
+                "This may not be a valid Variable log file."
+            )
+
+        self.variable_logs = sorted_logs
+        self.variable_timestamps = sorted_timestamps
+        self.item_index = item_index
+        self.current_equipment = current_equipment
+        self.sequences = sequences  # ← Sequences already built!
+
+        # Dynamic suffix items for DB
         dynamic_items = {}
-        eqp_set = set()
+        for item_code in item_index:
+            base, suffix = self.split_item_code(item_code)
+            if suffix:
+                dynamic_items.setdefault(base, set()).add(suffix)
 
-        logs_with_ts = []
-
-        for idx, log in enumerate(self.variable_logs):
-            raw = log.raw
-
-            log.original_index = idx
-            log.raw_lower = raw.casefold()
-
-            # ----------------------------
-            # Timestamp
-            # ----------------------------
-            try:
-                ts = datetime(
-                    int(raw[0:4]), int(raw[5:7]), int(raw[8:10]),
-                    int(raw[11:13]), int(raw[14:16]), int(raw[17:19])
-                )
-            except:
-                ts = None
-
-            log.ts = ts
-            ts_val = ts.timestamp() if ts else 0
-
-            # ----------------------------
-            # System
-            # ----------------------------
-            log.system = None
-            parts = raw.split("[")
-            for p in parts:
-                if "." in p and "]" in p:
-                    log.system = p.split("]")[0].split(".")[-1]
-                    break
-
-            # ----------------------------
-            # Equipment
-            # ----------------------------
-            eqp = None
-            for eq in self.KNOWN_EQUIPMENTS:
-                if eq in raw:
-                    eqp = eq
-                    break
-
-            log.equipment = eqp
-            if eqp:
-                eqp_set.add(eqp)
-
-            # ----------------------------
-            # 🔥 ITEM CODE (CACHED)
-            # ----------------------------
-            item_code = self.extract_item_code(raw)
-            log.item_code = item_code
-
-            # 🔥 BUILD INDEX
-            if item_code:
-                self.item_index.setdefault(item_code, []).append(log)
-
-            # dynamic DB mapping
-            if item_code:
-                base, suffix = self.split_item_code(item_code)
-                if suffix:
-                    dynamic_items.setdefault(base, set()).add(suffix)
-
-            logs_with_ts.append((ts_val, log))
-
-        # ----------------------------
-        # Sort logs by timestamp
-        # ----------------------------
-        logs_with_ts.sort(key=lambda x: x[0])
-
-        self.variable_timestamps = [ts for ts, _ in logs_with_ts]
-        self.variable_logs = [log for _, log in logs_with_ts]
-
-        if len(eqp_set) > 1:
-            print("⚠ Multiple equipments detected:", eqp_set)
-
-        self.current_equipment = next(iter(eqp_set), None)
-
-        self.db.rebuild_for_equipment(
-            self.current_equipment,
-            dynamic_items
-        )
+        self.db.rebuild_for_equipment(current_equipment, dynamic_items)
 
         self.display_logs(self.variable_logs)
         self.update_period_from_logs()
-        self.build_sequences()
+        # build_sequences() is GONE — sequences already built in worker
         self.populate_sequence_tree()
         self.build_item_list()
+
+        self.statusBar().showMessage(
+            f"Loaded {len(self.variable_logs):,} variable log lines.", 4000
+        )
 
     # -------------------
     # Timestamp + System
@@ -533,6 +473,13 @@ class LogViewer(QMainWindow):
         #   "b_off": bool
         # }
 
+        # O(log n) lookup structures
+        b_intervals = {}   # item -> sorted list of (start_ts, end_ts) for B sequences
+        w_timestamps = {}  # item -> set of datetime for W deduplication
+
+        buffer_sec = 1
+        import bisect
+
         for log in self.variable_logs:
 
             ts = log.ts
@@ -546,46 +493,48 @@ class LogViewer(QMainWindow):
                 continue
 
             # =====================================================
-            # 🟢 TYPE 2: W_TRIGGER_REPORT (instant)
+            # TYPE W: W_TRIGGER_REPORT (instant)
             # =====================================================
             if "W_TRIGGER_REPORT" in signal:
-                    existing_seqs = self.sequences.get(item, [])
 
-                    buffer_sec = 1
+                ts_val = ts.timestamp()
+                lo = ts_val - buffer_sec
+                hi = ts_val + buffer_sec
 
-                    # 🔥 Skip if this W falls inside any B sequence +- buffer time
-                    inside_b = any(
-                        s["type"] == "B" and (s["start"]- timedelta(seconds=buffer_sec)) <= ts <= (s["end"]+ timedelta(seconds=buffer_sec))
-                        for s in existing_seqs
-                    )
+                # O(log n) overlap check against known B intervals
+                intervals = b_intervals.get(item, [])
+                idx = bisect.bisect_left(intervals, (lo,))
 
-                    if inside_b:
-                        continue
+                inside_b = False
+                for iv_start, iv_end in intervals[max(0, idx - 1): idx + 2]:
+                    if iv_start <= hi and iv_end >= lo:
+                        inside_b = True
+                        break
 
-                    # Prevent exact duplicates
-                    duplicate = any(
-                        s["type"] == "W" and s["start"] == ts
-                        for s in existing_seqs
-                    )
-
-                    if duplicate:
-                        continue
-
-                    self.sequences.setdefault(item, []).append({
-                        "start": ts,
-                        "end": ts,
-                        "type": "W"
-                    })
+                if inside_b:
                     continue
 
+                # O(1) duplicate check
+                seen_w = w_timestamps.setdefault(item, set())
+                if ts in seen_w:
+                    continue
+                seen_w.add(ts)
+
+                self.sequences.setdefault(item, []).append({
+                    "start": ts,
+                    "end": ts,
+                    "type": "W"
+                })
+                continue
+
             # =====================================================
-            # 🔴 TYPE 1: B_TRIGGER_REPORT (strict 4-step sequence)
+            # TYPE B: B_TRIGGER_REPORT (strict 4-step sequence)
             # =====================================================
 
-            # 1️⃣ START → B_TRIGGER_REPORT: ON (NOT CONF)
+            # Step 1: B ON (not CONF)
             if ("B_TRIGGER_REPORT_CONF" not in signal
-                and "B_TRIGGER_REPORT" in signal
-                and val == "ON"):
+                    and "B_TRIGGER_REPORT" in signal
+                    and val == "ON"):
 
                 active[item] = {
                     "start": ts,
@@ -599,32 +548,29 @@ class LogViewer(QMainWindow):
 
             seq = active[item]
 
-            # 2️⃣ CONF ON
+            # Step 2: CONF ON
             if "B_TRIGGER_REPORT_CONF" in signal and val == "ON":
                 seq["conf_on"] = True
                 continue
 
-            # 3️⃣ B OFF
+            # Step 3: B OFF
             if ("B_TRIGGER_REPORT_CONF" not in signal
-                and "B_TRIGGER_REPORT" in signal
-                and val == "OFF"):
-
+                    and "B_TRIGGER_REPORT" in signal
+                    and val == "OFF"):
                 seq["b_off"] = True
                 continue
 
-            # 4️⃣ CONF OFF → COMPLETE
+            # Step 4: CONF OFF → sequence complete
             if "B_TRIGGER_REPORT_CONF" in signal and val == "OFF":
 
                 if seq["conf_on"] and seq["b_off"]:
 
-                    buffer_sec = 1
-
                     new_start = seq["start"] - timedelta(seconds=buffer_sec)
-                    new_end = ts + timedelta(seconds=buffer_sec)
+                    new_end   = ts           + timedelta(seconds=buffer_sec)
 
                     existing = self.sequences.setdefault(item, [])
 
-                    # 🔥 Remove ANY W inside this B window
+                    # Evict any W events that fall inside this B window
                     existing[:] = [
                         s for s in existing
                         if not (
@@ -635,13 +581,16 @@ class LogViewer(QMainWindow):
 
                     existing.append({
                         "start": seq["start"],
-                        "end": ts,
-                        "type": "B"
+                        "end":   ts,
+                        "type":  "B"
                     })
 
-                active.pop(item, None)
+                    # Register interval for future O(log n) W overlap checks
+                    interval = (seq["start"].timestamp(), ts.timestamp())
+                    item_intervals = b_intervals.setdefault(item, [])
+                    bisect.insort(item_intervals, interval)
 
-        #self.merge_overlapping_sequences()
+                active.pop(item, None)
 
     def populate_sequence_tree(self, force=False):
         if hasattr(self, "sequence_tree_built") and self.sequence_tree_built and not force:
@@ -1172,30 +1121,38 @@ class LogViewer(QMainWindow):
                 self.jump_variable_view_to_timestamp(self.pending_variable_jump)
                 self.pending_variable_jump = None
 
+    
+
     def jump_br_view_to_timestamp(self, ts):
-        tree = self.br_tab.tree
+        if not hasattr(self.br_tab, "sorted_exec_times"):
+            return
 
-        closest_item = None
-        closest_diff = float("inf")
+        times = self.br_tab.sorted_exec_times
+        executions = self.br_tab.sorted_executions
 
-        for i in range(tree.topLevelItemCount()):
+        if not times:
+            return
 
-            item = tree.topLevelItem(i)
-            execution = item.data(0, Qt.UserRole)
+        import bisect
+        idx = bisect.bisect_left(times, ts)
 
-            if not execution:
-                continue
+        candidates = []
+        if idx < len(times):
+            candidates.append(idx)
+        if idx > 0:
+            candidates.append(idx - 1)
 
-            br_ts = execution["timestamp"].timestamp()
-            diff = abs(br_ts - ts)
+        best = None
+        best_diff = float("inf")
 
-            if diff < closest_diff:
-                closest_diff = diff
-                closest_item = item
+        for i in candidates:
+            diff = abs(times[i] - ts)
+            if diff < best_diff:
+                best_diff = diff
+                best = executions[i]
 
-        if closest_item:
-            tree.scrollToItem(closest_item, QTreeWidget.PositionAtCenter)
-            tree.setCurrentItem(closest_item)
+        if best:
+            self.br_tab.jump_to_execution(best)
 
     def jump_variable_view_to_timestamp(self, ts):
         if not self.variable_logs:

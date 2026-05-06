@@ -24,6 +24,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="br_tab.py" />
+    <Compile Include="worker.py" />
     <Compile Include="period_dialog.py" />
     <Compile Include="db_manager.py" />
     <Compile Include="parser.py" />
