@@ -140,10 +140,9 @@ class BRTab(QWidget):
         self.populate_tree_from_executions(self.br_calls)
 
         main = self.window()
-        if hasattr(main, "item_list_built_br"):
-            main.item_list_built_br = False
-        if hasattr(main, "item_list_mode") and main.item_list_mode == "br":
+        if hasattr(main, "item_list_mode") and main.current_tab == "BR Logs":
             main.build_br_list()
+        main.br_logs_loading_finished = True
 
     def build_execution_index(self):
         self.execution_by_second.clear()

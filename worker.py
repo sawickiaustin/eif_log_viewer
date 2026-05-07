@@ -10,8 +10,8 @@ import bisect
 # Variable Log Worker (with integrated sequence building)
 # ============================================================
 class VariableLogWorker(QThread):
-    finished = Signal(list, list, dict, object, int, dict)
-    # emits: (sorted_logs, sorted_timestamps, item_index, current_equipment, skipped_count, sequences)
+    finished = Signal(list, list, dict, object, int, dict, dict)
+    # emits: (sorted_logs, sorted_timestamps, item_index, current_equipment, skipped_count, sequences, item_categories)
 
     KNOWN_EQUIPMENTS = ["MIX", "COT", "ROL", "RWD", "TRS"]
 
@@ -72,10 +72,22 @@ class VariableLogWorker(QThread):
 
             # System
             log.system = None
+            log.category = "EQP"  # default
+
             parts = raw.split("[")
             for p in parts:
                 if "." in p and "]" in p:
-                    log.system = p.split("]")[0].split(".")[-1]
+                    system_block = p.split("]")[0]
+                    log.system = system_block.split(".")[-1]
+        
+                    # Infer category from system block
+                    system_upper = system_block.upper()
+                    if "RMS" in system_upper:
+                        log.category = "RMS"
+                    elif "ROLLMAP" in system_upper:
+                        log.category = "ROLLMAP"
+                    else:
+                        log.category = "EQP"
                     break
 
             # Equipment
@@ -205,7 +217,16 @@ class VariableLogWorker(QThread):
         if skipped_count > 0:
             print(f"⚠ Skipped {skipped_count:,} invalid lines during variable log load")
 
-        self.finished.emit(sorted_logs, sorted_timestamps, item_index, current_equipment, skipped_count, sequences)
+        item_categories = {}
+        for item_code, logs_for_item in item_index.items():
+            # Use the category from the first log of this item
+            if logs_for_item:
+                item_categories[item_code] = logs_for_item[0].category
+
+        self.finished.emit(
+            sorted_logs, sorted_timestamps, item_index, current_equipment, 
+            skipped_count, sequences, item_categories
+        )
 
     def _extract_item_code(self, raw):
         try:

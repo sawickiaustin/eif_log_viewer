@@ -29,6 +29,9 @@ class LogViewer(QMainWindow):
 
         self.KNOWN_EQUIPMENTS = ["MIX", "COT", "ROL", "RWD", "TRS"]
 
+        self.variable_logs_loading_finished = False
+        self.br_logs_loading_finished = False
+
         self.br_list_built = False
         self.item_list_built = False
         self.item_list_mode = None 
@@ -73,6 +76,11 @@ class LogViewer(QMainWindow):
         # -------------------
         # Variable Log List
         # -------------------
+        # Create a container widget for the log list + loading overlay
+        self.log_container = QWidget()
+        log_container_layout = QVBoxLayout(self.log_container)
+        log_container_layout.setContentsMargins(0, 0, 0, 0)
+
         self.log_list = QListView()
         self.log_list.doubleClicked.connect(self.jump_to_log)
         self.pending_br_jump_ts = None
@@ -80,6 +88,21 @@ class LogViewer(QMainWindow):
 
         self.log_model = LogListModel()
         self.log_list.setModel(self.log_model)
+
+        # Loading label (initially hidden)
+        self.log_loading_label = QLabel("⏳ Loading variable log...")
+        self.log_loading_label.setAlignment(Qt.AlignCenter)
+        self.log_loading_label.setStyleSheet("""
+            QLabel {
+                font-size: 14px;
+                color: #666;
+                padding: 20px;
+            }
+        """)
+        self.log_loading_label.hide()
+
+        log_container_layout.addWidget(self.log_loading_label)
+        log_container_layout.addWidget(self.log_list)
 
         # -------------------
         # BR Tab (log viewer)
@@ -91,11 +114,13 @@ class LogViewer(QMainWindow):
         # LEFT SIDE TABS (Log sources)
         # -------------------
         self.left_tabs = QTabWidget()
-        self.left_tabs.addTab(self.log_list, "Variable Logs")
+        self.left_tabs.addTab(self.log_container, "Variable Logs")  # ← changed from self.log_list
         self.left_tabs.addTab(self.br_tab, "BR Logs")
 
         # Detect tab switch
         self.left_tabs.currentChanged.connect(self.on_left_tab_changed)
+
+        self.current_tab = 'Variable Logs'
 
         # -------------------
         # RIGHT SIDE TABS (Analysis)
@@ -252,6 +277,8 @@ class LogViewer(QMainWindow):
         return True
 
     def load_variable_log(self, path):
+        self.reset_all_state()
+
         raw_logs = load_log_file(path)
 
         # Reset flags
@@ -260,16 +287,21 @@ class LogViewer(QMainWindow):
         self.item_list_built_variable = False
         self.item_index = {}
 
-        # Show a loading state so the UI doesn't look frozen
+        # Show loading indicator
         self.log_model.setLogs([])
-        self.statusBar().showMessage("Loading variable log…")
+        self.log_loading_label.show()  # ← Show loading label
+        self.log_list.hide()           # ← Hide the li
 
         # Spin up worker
         self._var_worker = VariableLogWorker(raw_logs)
         self._var_worker.finished.connect(self._on_variable_log_ready)
         self._var_worker.start()
 
-    def _on_variable_log_ready(self, sorted_logs, sorted_timestamps, item_index, current_equipment, skipped_count, sequences):
+    def _on_variable_log_ready(self, sorted_logs, sorted_timestamps, item_index, current_equipment, skipped_count, sequences, item_categories):
+        # Hide loading indicator
+        self.log_loading_label.hide()  # ← Hide loading label
+        self.log_list.show()           # ← Show the list
+
         # Alert if >20% of lines were invalid
         total_lines = len(sorted_logs) + skipped_count
         if total_lines > 0 and (skipped_count / total_lines) > 0.2:
@@ -284,7 +316,7 @@ class LogViewer(QMainWindow):
         self.variable_timestamps = sorted_timestamps
         self.item_index = item_index
         self.current_equipment = current_equipment
-        self.sequences = sequences  # ← Sequences already built!
+        self.sequences = sequences
 
         # Dynamic suffix items for DB
         dynamic_items = {}
@@ -293,13 +325,16 @@ class LogViewer(QMainWindow):
             if suffix:
                 dynamic_items.setdefault(base, set()).add(suffix)
 
-        self.db.rebuild_for_equipment(current_equipment, dynamic_items)
+        self.db.rebuild_for_equipment(current_equipment, dynamic_items, item_categories)
 
         self.display_logs(self.variable_logs)
         self.update_period_from_logs()
-        # build_sequences() is GONE — sequences already built in worker
         self.populate_sequence_tree()
-        self.build_item_list()
+
+        if self.current_tab == "Variable Logs":
+            self.build_item_list()
+
+        self.variable_logs_loading_finished = True
 
         self.statusBar().showMessage(
             f"Loaded {len(self.variable_logs):,} variable log lines.", 4000
@@ -1092,14 +1127,12 @@ class LogViewer(QMainWindow):
         self.item_list_built_br = True
 
     def on_left_tab_changed(self, index):
-        tab_text = self.left_tabs.tabText(index)
+        self.current_tab = self.left_tabs.tabText(index)
         # -----------------------
         # BR TAB
         # -----------------------
-        if tab_text == "BR Logs":
-            if self.item_list_mode != "br":
-                self.build_br_list()   # ✅ NO force (uses cache)
-                self.item_list_mode = "br"
+        if self.br_logs_loading_finished == True and self.current_tab == "BR Logs":
+            self.build_br_list()   
 
             if self.pending_br_highlight:
                 self.br_tab.highlight_br_executions(self.pending_br_highlight)
@@ -1112,14 +1145,14 @@ class LogViewer(QMainWindow):
         # -----------------------
         # VARIABLE TAB
         # -----------------------
-        else:
-            if self.item_list_mode != "variable":
-                self.build_item_list()   # ✅ NO force (uses cache)
-                self.item_list_mode = "variable"
+        elif self.variable_logs_loading_finished == True and self.current_tab == "Variable Logs":
+            self.build_item_list()   # ✅ NO force (uses cache)
 
             if self.pending_variable_jump:
                 self.jump_variable_view_to_timestamp(self.pending_variable_jump)
                 self.pending_variable_jump = None
+        else:
+            self.item_list.clear()
 
     
 
@@ -1256,6 +1289,63 @@ class LogViewer(QMainWindow):
         if match:
             return match.group(1), match.group(2)
         return item_code, None
+
+    def reset_all_state(self):
+        # Reset data structures
+        self.variable_logs = []
+        self.variable_timestamps = []
+        self.br_logs = []
+        self.sequences = {}
+        self.items = set()
+        self.item_index = {}
+        self.br_names = []
+        self.variable_logs_loading_finished = False
+        self.br_logs_loading_finished = False
+    
+        # Reset cache flags
+        self.br_list_built = False
+        self.item_list_built = False
+        self.item_list_built_variable = False
+        self.item_list_built_br = False
+        self.item_list_mode = None
+        self.sequence_tree_built = False
+    
+        # Reset pending actions
+        self.pending_br_jump_ts = None
+        self.pending_br_highlight = None
+        self.pending_variable_jump = None
+    
+        # Clear UI elements
+        self.log_model.setLogs([])
+        self.item_list.clear()
+        self.seq_tree.clear()
+    
+        # Clear search
+        self.search_input.blockSignals(True)
+        self.search_input.clear()
+        self.search_input.blockSignals(False)
+    
+        # Reset period to default
+        self.period_start = QDateTime.currentDateTime().addSecs(-3600)
+        self.period_end = QDateTime.currentDateTime()
+        self.update_period_button()
+    
+        # Clear BR tab
+        self.br_tab.tree.clear()
+        self.br_tab.br_calls = []
+        self.br_tab.br_name_index = {}
+        self.br_tab.execution_item_map = {}
+        self.br_tab.sorted_exec_times = []
+        self.br_tab.sorted_executions = []
+        self.br_tab.execution_by_second = {}
+        self.br_tab.highlighted_item = None
+        self.br_tab.last_displayed_ids = None
+        self.br_tab._all_executions = []
+        self.br_tab._current_page = 0
+        self.br_tab.page_label.setText("Page 1 of 1")
+    
+        # Clear database
+        self.db.clear_all()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

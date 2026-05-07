@@ -710,21 +710,19 @@ class DBManager:
     # ============================================================
     # 🔥 CORE: Rebuild DB based on Equipment
     # ============================================================
-    def rebuild_for_equipment(self, eqp, dynamic_items=None):
+    def rebuild_for_equipment(self, eqp, dynamic_items=None, item_categories=None):
         """
         Build DB using:
         - COMMON_DATA (default EQP)
         - EQP_DATA (EQP / ROLLMAP split)
         - dynamic suffix expansion (_01, _02, etc.)
+        - item_categories from actual log data (overrides hardcoded categories)
         """
 
         self.clear_all()
-
         merged = {}
 
-        # -----------------------------
         # 1️⃣ Load COMMON (default EQP)
-        # -----------------------------
         for category, items in COMMON_DATA.items():
             for item_code, data in items.items():
                 merged[item_code] = {
@@ -733,21 +731,14 @@ class DBManager:
                     "category": category
                 }
 
-        # -----------------------------
         # 2️⃣ Apply Equipment Override
-        # -----------------------------
         eqp_data = EQP_DATA.get(eqp, {})
-
-        # ✅ Detect format ONCE
         is_new_format = (
             isinstance(eqp_data, dict) and
             any(k in eqp_data for k in ("EQP", "ROLLMAP", "RMS"))
         )
 
         if is_new_format:
-            # -----------------------------
-            # NEW FORMAT (EQP / ROLLMAP)
-            # -----------------------------
             for category, items in eqp_data.items():
                 for item_code, data in items.items():
                     merged[item_code] = {
@@ -756,9 +747,6 @@ class DBManager:
                         "category": category
                     }
         else:
-            # -----------------------------
-            # OLD FORMAT (flat → treat as EQP)
-            # -----------------------------
             for item_code, data in eqp_data.items():
                 merged[item_code] = {
                     "name": data["name"],
@@ -766,36 +754,38 @@ class DBManager:
                     "category": "EQP"
                 }
 
-        # -----------------------------
         # 3️⃣ Expand dynamic suffix items
-        # -----------------------------
         if dynamic_items:
             expanded = {}
-
             for item_code, data in merged.items():
-
-                # Keep original
                 expanded[item_code] = data
-
-                # Expand suffix (🔥 FIX: keep category)
                 if item_code in dynamic_items:
                     for suffix in dynamic_items[item_code]:
                         new_code = f"{item_code}_{suffix}"
-
                         expanded[new_code] = {
                             "name": f"{data['name']} {suffix}",
                             "brs": list(data["brs"]),
-                            "category": data["category"]   # 🔥 CRITICAL FIX
+                            "category": data["category"]
                         }
-
             merged = expanded
 
-        # -----------------------------
-        # 4️⃣ Insert into DB
-        # -----------------------------
+        # 🔥 4️⃣ Override categories from actual log data
+        if item_categories:
+            for item_code, log_category in item_categories.items():
+                if item_code in merged:
+                    merged[item_code]["category"] = log_category
+                else:
+                    # Item exists in logs but not in COMMON_DATA or EQP_DATA
+                    # Add it with the log-derived category
+                    merged[item_code] = {
+                        "name": item_code,  # no friendly name available
+                        "brs": [],
+                        "category": log_category
+                    }
+
+        # 5️⃣ Insert into DB
         for item_code, data in merged.items():
             self.insert_item(item_code, data["name"], data["category"])
-
             for br in data["brs"]:
                 self.insert_item_br(item_code, br)
 
