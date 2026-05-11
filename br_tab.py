@@ -110,22 +110,22 @@ class BRTab(QWidget):
         self.tree.setSortingEnabled(True)
         self.tree.setUpdatesEnabled(True)
 
-    def load_full_logs(self, logs):
-        self.full_br_logs = logs
-        self.build_full_index(logs)
-
+    def load_full_logs(self, filepath):
+        self.full_br_logs = []
+        self.full_br_index = {}
         self.br_calls = []
         self.br_name_index.clear()
         self.tree.clear()
         QTreeWidgetItem(self.tree, ["⏳ Parsing BR log…"])
 
         from worker import BRLogWorker
-        self._br_worker = BRLogWorker(logs)
+        self._br_worker = BRLogWorker(filepath)
         self._br_worker.finished.connect(self._on_br_calls_ready)
         self._br_worker.start()
 
-    def _on_br_calls_ready(self, br_calls):
+    def _on_br_calls_ready(self, br_calls, full_br_index):  # ← Added full_br_index parameter
         self.br_calls = br_calls
+        self.full_br_index = full_br_index  # ← Receive from worker
         self.br_name_index.clear()
 
         for execution in br_calls:

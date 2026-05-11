@@ -79,6 +79,11 @@ COMMON_DATA = {
             "brs": ["BR_EQP_REG_UNMOUNT_UBM_L"]
         },
 
+        "G6_3_EQP_PART_MONITOR": {
+            "name": "UBM Parts Monitoring Data Report",
+            "brs": ["BR_EQP_REG_UNMOUNT_UBM_L"]
+        },
+
         "T1_0_PORT_STAT_REFRESH_REQ": {
             "name": "Port Status Refresh Request",
             "brs": []
@@ -604,7 +609,35 @@ EQP_DATA = {
             }                      
         },
         "RMS": {}
-    }
+    },
+    "NND": {
+        "EQP": {
+            "G3_2_LOT_START_RPT": {
+                "name": "Lot Start Report",
+                "brs": ["BR_PRD_REG_START_LOT_NT_L"]
+            },
+            "G3_3_LOT_END_RPT": {
+                "name": "Lot End Report",
+                "brs": ["BR_PRD_REG_EQPT_END_LOT_NT_L"]
+            },
+            "G3_3_LOT_END_RPT": {
+                "name": "Lot End Report",
+                "brs": ["BR_PRD_REG_EQPT_END_LOT_NT_L"]
+            },
+            "G2_1_CARR_ID_RPT": {
+                "name": "Carrier ID Report",
+                "brs": [
+                    "BR_PRD_CHK_INPUT_LOT_NT_L","BR_PRD_CHK_UNLOADER_CSTID_L","BR_PRD_GET_WORKORDER"
+                ]
+            },
+            "G2_6_CARR_JOB_END": {
+                "name": "Carrier Job End Report",
+                "brs": ["BR_PRD_REG_CHG_SLIT_SIDE_ROLL_DIR_EIF","BR_PRD_REG_CSTID_EMPTY_AS"]
+            },
+        },
+        "ROLLMAP": {},
+        "RMS": {}
+    },
 }
 
 

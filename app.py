@@ -45,6 +45,7 @@ class LogViewer(QMainWindow):
         self.variable_logs = []
         self.br_logs = []
         self.sequences = {}
+        self.item_categories = {} 
 
         self.period_start = QDateTime.currentDateTime().addSecs(-3600)
         self.period_end = QDateTime.currentDateTime()
@@ -215,16 +216,14 @@ class LogViewer(QMainWindow):
 
 
     def load_br_log(self, path):
-        logs = load_log_file(path)
-
-        # 🔥 VALIDATION (must contain BIZRULE or REQUESTQ)
         valid = False
-
-        for log in logs[:100]:
-            raw = log.raw
-            if "BIZRULE" in raw or "(REQUESTQ)" in raw:
-                valid = True
-                break
+        with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
+            for i, line in enumerate(f):
+                if i >= 100:
+                    break
+                if "BIZRULE" in line or "(REQUESTQ)" in line:
+                    valid = True
+                    break
 
         if not valid:
             QMessageBox.critical(
@@ -234,15 +233,9 @@ class LogViewer(QMainWindow):
             )
             return
 
-        self.br_logs = logs
+        # Pass path to BR tab
+        self.br_tab.load_full_logs(path)
 
-        # 🔥 reset cache flag
-        self.br_list_built = False
-        self.item_list_built_br = False
-
-        self.br_tab.load_full_logs(logs)
-
-        print(f"Loaded BR log: {len(logs)} lines")
     # -------------------
     # File Loading
     # -------------------
@@ -279,28 +272,20 @@ class LogViewer(QMainWindow):
     def load_variable_log(self, path):
         self.reset_all_state()
 
-        raw_logs = load_log_file(path)
-
-        # Reset flags
-        self.item_list_built = False
-        self.sequence_tree_built = False
-        self.item_list_built_variable = False
-        self.item_index = {}
-
         # Show loading indicator
         self.log_model.setLogs([])
-        self.log_loading_label.show()  # ← Show loading label
-        self.log_list.hide()           # ← Hide the li
+        self.log_loading_label.show()
+        self.log_list.hide()
 
-        # Spin up worker
-        self._var_worker = VariableLogWorker(raw_logs)
+        # 🔥 Pass filepath, not logs
+        self._var_worker = VariableLogWorker(path)
         self._var_worker.finished.connect(self._on_variable_log_ready)
         self._var_worker.start()
 
     def _on_variable_log_ready(self, sorted_logs, sorted_timestamps, item_index, current_equipment, skipped_count, sequences, item_categories):
         # Hide loading indicator
-        self.log_loading_label.hide()  # ← Hide loading label
-        self.log_list.show()           # ← Show the list
+        self.log_loading_label.hide()
+        self.log_list.show()
 
         # Alert if >20% of lines were invalid
         total_lines = len(sorted_logs) + skipped_count
@@ -317,6 +302,7 @@ class LogViewer(QMainWindow):
         self.item_index = item_index
         self.current_equipment = current_equipment
         self.sequences = sequences
+        self.item_categories = item_categories  
 
         # Dynamic suffix items for DB
         dynamic_items = {}
@@ -638,7 +624,8 @@ class LogViewer(QMainWindow):
 
         for item_code, seqs in sorted(self.sequences.items()):
 
-            category = self.db.get_item_category(item_code)
+            # 🔥 FIX: Use item_categories directly instead of database
+            category = self.item_categories.get(item_code, "EQP")
 
             if category not in group_nodes:
                 group_nodes[category] = QTreeWidgetItem([category])
@@ -1296,6 +1283,7 @@ class LogViewer(QMainWindow):
         self.variable_timestamps = []
         self.br_logs = []
         self.sequences = {}
+        self.item_categories = {} 
         self.items = set()
         self.item_index = {}
         self.br_names = []
