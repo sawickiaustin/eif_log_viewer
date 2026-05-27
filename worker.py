@@ -52,6 +52,7 @@ def _process_variable_chunk(filepath, start_line, end_line):
     active = {}
     b_intervals = {}
     w_timestamps = {}
+    ack_events = {} 
     buffer_sec = 1
     
     KNOWN_EQUIPMENTS = ["MIX", "COT", "ROL", "RWD", "TRS","NND"]
@@ -146,6 +147,9 @@ def _process_variable_chunk(filepath, start_line, end_line):
             if not item or not signal:
                 continue
 
+            if "W_TRIGGER_REPORT_ACK" in signal and val == "11":
+                ack_events.setdefault(item, []).append(ts.timestamp())
+
             # W_TRIGGER_REPORT
             if "W_TRIGGER" in signal:
                 ts_val_float = ts.timestamp()
@@ -225,11 +229,19 @@ def _process_variable_chunk(filepath, start_line, end_line):
                         )
                     ]
 
+                    win_lo = seq["start"].timestamp()
+                    win_hi = ts.timestamp()
+                    acks = ack_events.get(item, [])
+                    lo_i = bisect.bisect_left(acks, win_lo)
+                    hi_i = bisect.bisect_right(acks, win_hi)
+                    has_ack_error = hi_i > lo_i
+
                     existing.append({
                         "start": seq["start"],
                         "end": ts,
                         "type": "B",
-                        "core_indices": [l.original_index for l in seq["logs"]],  # ← NEW
+                        "core_indices": [l.original_index for l in seq["logs"]],
+                        "error": has_ack_error
                     })
 
                     # Register interval for future W overlap checks
@@ -497,6 +509,7 @@ class VariableLogWorker(QThread):
         active = {}
         b_intervals = {}
         w_timestamps = {}
+        ack_events = {}
         buffer_sec = 1
         item_categories = {}
 
@@ -590,6 +603,9 @@ class VariableLogWorker(QThread):
                 if not item or not signal:
                     continue
 
+                if "W_TRIGGER_REPORT_ACK" in signal and val == "11":
+                    ack_events.setdefault(item, []).append(ts.timestamp())
+
                 # W_TRIGGER_REPORT
                 if "W_TRIGGER" in signal:
                     ts_val_float = ts.timestamp()
@@ -669,11 +685,19 @@ class VariableLogWorker(QThread):
                             )
                         ]
 
+                        win_lo = seq["start"].timestamp()
+                        win_hi = ts.timestamp()
+                        acks = ack_events.get(item, [])
+                        lo_i = bisect.bisect_left(acks, win_lo)
+                        hi_i = bisect.bisect_right(acks, win_hi)
+                        has_ack_error = hi_i > lo_i
+
                         existing.append({
                             "start": seq["start"],
                             "end": ts,
                             "type": "B",
-                            "core_indices": [l.original_index for l in seq["logs"]],  # ← NEW
+                            "core_indices": [l.original_index for l in seq["logs"]],
+                            "error": has_ack_error
                         })
 
                         # Register interval for future W overlap checks

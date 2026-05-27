@@ -1,7 +1,7 @@
 ﻿# br_tab.py
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem, QHBoxLayout, QPushButton, QLabel
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush
+from PySide6.QtGui import QBrush, QColor
 from datetime import datetime
 import json
 import re
@@ -99,9 +99,15 @@ class BRTab(QWidget):
         for execution in chunk:  # ← ADD reversed() HERE
             ts = execution["timestamp"]
             root_text = f"{ts.strftime('%H:%M:%S.%f')[:-3]}  {execution['br_name']}"
-        
+
             root_item = QTreeWidgetItem([root_text])
             root_item.setData(0, Qt.UserRole, execution)
+
+            # 🔴 Always flag exception BR rule with full red row
+            if execution.get("br_name") == "BR_SYS_REG_BIZRULE_EXCEPTION":
+                root_item.setBackground(0, QBrush(QColor("red")))
+                root_item.setForeground(0, QBrush(QColor("white")))
+
             self.execution_item_map[id(execution)] = root_item
             root_item.addChild(QTreeWidgetItem(["Loading..."]))
             items.append(root_item)

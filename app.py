@@ -649,9 +649,11 @@ class LogViewer(QMainWindow):
                 label = f"[{seq['type']}] {st.strftime('%Y-%m-%d %H:%M:%S')}"
 
                 child = QTreeWidgetItem([label])
-
-                # 🔥 ALWAYS store dict (critical fix)
                 child.setData(0, Qt.UserRole, seq)
+
+                if seq.get("error"):
+                    from PySide6.QtGui import QBrush, QColor
+                    child.setForeground(0, QBrush(QColor("red")))
 
                 parent.addChild(child)
 
