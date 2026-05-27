@@ -688,7 +688,6 @@ class LogViewer(QMainWindow):
 
         if seq["type"] == "B":
             buffer_sec = 1
-
             st = seq["start"] - timedelta(seconds=buffer_sec)
             et = seq["end"] + timedelta(seconds=buffer_sec)
 
@@ -704,8 +703,8 @@ class LogViewer(QMainWindow):
 
         self.update_period_from_logs()
 
-        st_ts = int(st.timestamp())
-        et_ts = int(et.timestamp())
+        st_ts = st.timestamp()
+        et_ts = et.timestamp()
 
         # ---------------------------------
         # FAST slice by time
@@ -721,74 +720,28 @@ class LogViewer(QMainWindow):
         # 🔴 B SEQUENCE HANDLING
         # =====================================================
         if seq["type"] == "B":
-
-            main_sequence = []
-            step = 0
-
-            for log in logs_in_range:
-                item, signal = self.parse_item_signal(log.raw)
-                val = self.parse_value(log.raw)
-
-                if item != item_code:
-                    continue
-
-                # STEP 1: B ON
-                if step == 0:
-                    if "B_TRIGGER_REPORT" in signal and "CONF" not in signal and val == "ON":
-                        main_sequence.append(log)
-                        step = 1
-                    continue
-
-                # STEP 2: CONF ON
-                elif step == 1:
-                    if "B_TRIGGER_REPORT_CONF" in signal and val == "ON":
-                        main_sequence.append(log)
-                        step = 2
-                    continue
-
-                # STEP 3: B OFF
-                elif step == 2:
-                    if "B_TRIGGER_REPORT" in signal and "CONF" not in signal and val == "OFF":
-                        main_sequence.append(log)
-                        step = 3
-                    continue
-
-                # STEP 4: CONF OFF
-                elif step == 3:
-                    if "B_TRIGGER_REPORT_CONF" in signal and val == "OFF":
-                        main_sequence.append(log)
-                        break  # done
-
-            # ---------------------------------
-            # Collect ALL other valid logs
-            # ---------------------------------
-            main_set = {log.original_index for log in main_sequence}
+            core_set = set(seq.get("core_indices", []))
 
             final_logs = []
-
             for log in logs_in_range:
-                item, signal = self.parse_item_signal(log.raw)
+                item_c, signal = self.parse_item_signal(log.raw)
 
-                if item != item_code:
+                if item_c != item_code:
                     continue
 
-                # ✅ Always include the main sequence logs
-                if log.original_index in main_set:
+                # Always include this sequence's exact core logs
+                if log.original_index in core_set:
                     final_logs.append(log)
                     continue
 
-                # ❌ Skip ANY extra B/CONF logs (outliers)
+                # Drop any B/CONF logs that aren't part of THIS sequence
                 if "B_TRIGGER_REPORT" in signal:
                     continue
 
-                # ✅ Include everything else (W, IDs, etc.)
+                # Include non-B context (W events, IDs, etc.)
                 final_logs.append(log)
 
-            # ---------------------------------
-            # Sort final logs by timestamp
-            # ---------------------------------
-            final_logs.sort(key=lambda x: x.ts or 0)
-
+            final_logs.sort(key=lambda x: x.ts or datetime.min)
             self.display_logs(final_logs)
 
         # =====================================================

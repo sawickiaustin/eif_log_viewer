@@ -147,7 +147,7 @@ def _process_variable_chunk(filepath, start_line, end_line):
                 continue
 
             # W_TRIGGER_REPORT
-            if "W_TRIGGER_REPORT" in signal:
+            if "W_TRIGGER" in signal:
                 ts_val_float = ts.timestamp()
                 lo = ts_val_float - buffer_sec
                 hi = ts_val_float + buffer_sec
@@ -183,7 +183,8 @@ def _process_variable_chunk(filepath, start_line, end_line):
                 active[item] = {
                     "start": ts,
                     "conf_on": False,
-                    "b_off": False
+                    "b_off": False,
+                    "logs": [log]
                 }
                 continue
 
@@ -195,6 +196,7 @@ def _process_variable_chunk(filepath, start_line, end_line):
             # Step 2: CONF ON
             if "B_TRIGGER_REPORT_CONF" in signal and val == "ON":
                 seq["conf_on"] = True
+                seq["logs"].append(log)
                 continue
 
             # Step 3: B OFF
@@ -202,11 +204,13 @@ def _process_variable_chunk(filepath, start_line, end_line):
                     and "B_TRIGGER_REPORT" in signal
                     and val == "OFF"):
                 seq["b_off"] = True
+                seq["logs"].append(log)
                 continue
 
             # Step 4: CONF OFF → sequence complete
             if "B_TRIGGER_REPORT_CONF" in signal and val == "OFF":
                 if seq["conf_on"] and seq["b_off"]:
+                    seq["logs"].append(log)
                     new_start = seq["start"] - timedelta(seconds=buffer_sec)
                     new_end = ts + timedelta(seconds=buffer_sec)
 
@@ -224,7 +228,8 @@ def _process_variable_chunk(filepath, start_line, end_line):
                     existing.append({
                         "start": seq["start"],
                         "end": ts,
-                        "type": "B"
+                        "type": "B",
+                        "core_indices": [l.original_index for l in seq["logs"]],  # ← NEW
                     })
 
                     # Register interval for future W overlap checks
@@ -586,7 +591,7 @@ class VariableLogWorker(QThread):
                     continue
 
                 # W_TRIGGER_REPORT
-                if "W_TRIGGER_REPORT" in signal:
+                if "W_TRIGGER" in signal:
                     ts_val_float = ts.timestamp()
                     lo = ts_val_float - buffer_sec
                     hi = ts_val_float + buffer_sec
@@ -622,7 +627,8 @@ class VariableLogWorker(QThread):
                     active[item] = {
                         "start": ts,
                         "conf_on": False,
-                        "b_off": False
+                        "b_off": False,
+                        "logs": [log]
                     }
                     continue
 
@@ -634,6 +640,7 @@ class VariableLogWorker(QThread):
                 # Step 2: CONF ON
                 if "B_TRIGGER_REPORT_CONF" in signal and val == "ON":
                     seq["conf_on"] = True
+                    seq["logs"].append(log)
                     continue
 
                 # Step 3: B OFF
@@ -641,11 +648,13 @@ class VariableLogWorker(QThread):
                         and "B_TRIGGER_REPORT" in signal
                         and val == "OFF"):
                     seq["b_off"] = True
+                    seq["logs"].append(log)
                     continue
 
                 # Step 4: CONF OFF → sequence complete
                 if "B_TRIGGER_REPORT_CONF" in signal and val == "OFF":
                     if seq["conf_on"] and seq["b_off"]:
+                        seq["logs"].append(log)
                         new_start = seq["start"] - timedelta(seconds=buffer_sec)
                         new_end = ts + timedelta(seconds=buffer_sec)
 
@@ -663,7 +672,8 @@ class VariableLogWorker(QThread):
                         existing.append({
                             "start": seq["start"],
                             "end": ts,
-                            "type": "B"
+                            "type": "B",
+                            "core_indices": [l.original_index for l in seq["logs"]],  # ← NEW
                         })
 
                         # Register interval for future W overlap checks

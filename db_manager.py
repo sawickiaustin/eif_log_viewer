@@ -26,7 +26,7 @@ COMMON_DATA = {
         },
 
         "C2_3_HOST_ALARM_MSG_SEND": {"name": "Host Alarm Message Send", "brs": []},
-        "C2_4_EQP_OP_MODE_CHG_RPT": {"name": "EQP Operation Mode Change Report", "brs": []},
+        "C2_4_EQP_OP_MODE_CHG_RPT": {"name": "EQP Operation Mode Change Report", "brs": ["BR_PRD_REG_EIOATTR_SLIT_SIDE_ROLL_DIR"]},
         "C2_5_PROCESS_STAT_CHG_RPT": {"name": "Process State Change Report", "brs": []},
         "C2_6_REMOTE_COMM_SND": {"name": "Remote Command Send", "brs": []},
 
@@ -57,13 +57,19 @@ COMMON_DATA = {
         "G1_6_MTRL_JOB_START_RPT": {"name": "Material Job Start Report", "brs": []},
         "G1_7_MTRL_JOB_END_RPT": {"name": "Material Job End Report", "brs": []},
 
+        "G2_0_CARR_MONITER_DATA": {"name": "Carrier Monitoring Data Report", "brs": []},
         "G2_1_CARR_ID_RPT": {"name": "Carrier ID Report", "brs": []},
         "G2_2_CARR_IN_RPT": {"name": "Carrier In Report", "brs": []},
+        "G2_2_CARR_JOB_START": {"name": "Carrier Job Start Report", "brs": []},
         "G2_3_CARR_OUT_RPT": {"name": "Carrier Out Report", "brs": []},
+        "G2_4_CARR_STAT_CHG": {"name": "Carrier Status Change", "brs": []},
+        "G2_6_CARR_JOB_END": {"name": "Carrier Job End Report", "brs": []},
 
         "G3_2_LOT_START_RPT": {"name": "Lot Start Report", "brs": []},
         "G3_3_LOT_END_RPT": {"name": "Lot End Report", "brs": []},
 
+        "G3_5_APD_RPT": {"name": "APD Report", "brs": []},
+        "G3_6_WIP_DATA_RPT": {"name": "WIP Data Report", "brs": []},
         "G3_7_DFT_DATA_RPT": {
             "name": "Defect Data Report",
             "brs": ["BR_PRD_REG_EQPT_DFCT_CLCT_L"]
@@ -86,15 +92,20 @@ COMMON_DATA = {
 
         "T1_0_PORT_STAT_REFRESH_REQ": {
             "name": "Port Status Refresh Request",
-            "brs": []
+            "brs": ["BR_MHS_EIF_REG_EQPT_PORT_TRF_STATE"]
         },
 
         "T1_1_PORT_STAT_CHG": {
             "name": "Port State Change Report",
             "brs": [
-                "BR_MHS_EIF_REG_EQPT_PORt_TRF_STATE",
+                "BR_MHS_EIF_REG_EQPT_PORT_TRF_STATE",
                 "BR_MHS_EIF_REG_EQPT_PORT_ACCESS_MODE"
             ]
+        },
+
+        "T1_2_MACHINE_MON_DATA": {
+            "name": "Passive Machine Monitoring Data Report",
+            "brs": []
         },
 
         "T1_4_PORT_MTRL_TRANSFER_STAT_REQ": {
@@ -121,6 +132,14 @@ COMMON_DATA = {
         }
     },
     "RMS": {
+        "EQP_OP_MODE_CHG_RPT": {
+            "name": "Equipment Operation Mode Change",
+            "brs": []
+        },
+        "HOST_ALARM_MSG_SEND": {
+            "name": "Host Alarm Message",
+            "brs": []
+        },
         "RMS_CTL_STAT_CHG": {
             "name": "RMS Control State Change",
             "brs": []
@@ -614,28 +633,94 @@ EQP_DATA = {
         "EQP": {
             "G3_2_LOT_START_RPT": {
                 "name": "Lot Start Report",
-                "brs": ["BR_PRD_REG_START_LOT_NT_L"]
+                "brs": ["BR_PRD_REG_START_LOT_NT_L","BR_PRD_REG_RM_EIF_EQPT_START"]
             },
             "G3_3_LOT_END_RPT": {
                 "name": "Lot End Report",
-                "brs": ["BR_PRD_REG_EQPT_END_LOT_NT_L"]
-            },
-            "G3_3_LOT_END_RPT": {
-                "name": "Lot End Report",
-                "brs": ["BR_PRD_REG_EQPT_END_LOT_NT_L"]
+                "brs": ["BR_PRD_REG_EQPT_END_LOT_NT_L","BR_QCA_REG_EQPT_DATA_CLCT","BR_PRD_REG_RM_EIF_EQPT_END","BR_PRD_REG_RM_EIF_PET"]
             },
             "G2_1_CARR_ID_RPT": {
                 "name": "Carrier ID Report",
-                "brs": [
-                    "BR_PRD_CHK_INPUT_LOT_NT_L","BR_PRD_CHK_UNLOADER_CSTID_L","BR_PRD_GET_WORKORDER"
-                ]
+                "brs": ["BR_PRD_CHK_INPUT_LOT_NT_L","BR_PRD_CHK_UNLOADER_CSTID_L","BR_PRD_GET_WORKORDER","BR_PRD_SEL_LOT_INFO_BY_CSTID","BR_PRD_CHK_INPUT_LOT_MCS_L"]
             },
             "G2_6_CARR_JOB_END": {
                 "name": "Carrier Job End Report",
-                "brs": ["BR_PRD_REG_CHG_SLIT_SIDE_ROLL_DIR_EIF","BR_PRD_REG_CSTID_EMPTY_AS"]
+                "brs": ["BR_PRD_REG_CHG_SLIT_SIDE_ROLL_DIR_EIF","BR_PRD_REG_CSTID_EMPTY_AS","BR_MCS_REG_CARRIER_ABNORM_LIST"]
+            },
+            "S6_1_SHIFT_CHG_RPT": {
+                "name": "Shift Change Report",
+                "brs": ["BR_QCA_REG_EQPT_DATA_CLCT"]
             },
         },
-        "ROLLMAP": {},
+        "ROLLMAP": {
+            "GRP_LOT_START_RPT": {
+                "name": "Lot Start Report",
+                "brs": ["BR_PRD_REG_RM_EIF_EQPT_START"]
+            },
+            "GRP_LOT_END_RPT": {
+                "name": "Lot End Report",
+                "brs": []
+            },
+            "SECTION_DEF_DATA_RPT": {
+                "name": "Section Defect Data Report",
+                "brs": ["BR_PRD_REG_RM_EIF_PET"]
+            },
+            "DATUM_MARK_DETECT_RPT": {
+                "name": "Datum Point Marking Detection Report",
+                "brs": ["BR_PRD_REG_RM_EIF_MARK_DETECT"]
+            },
+            "ALARM_RPT": {
+                "name": "Alarm Report",
+                "brs": ["BR_PRD_REG_RM_EIF_TENSION_ALARM"]
+            },
+        },
+        "RMS": {}
+    },
+    "LAM": {
+        "EQP": {
+            "G1_1_MTRL_MONITOR_DATA": {
+                "name": "Material Monitoring Data Report",
+                "brs": ["BR_PRD_CHK_INPUT_LOT_LM_L"]
+            },
+            "G1_2_MTRL_ID_REQ": {
+                "name": "Material ID Confirm Request",
+                "brs": ["BR_PRD_CHK_INPUT_LOT_LM_L","BR_PRD_REG_MTRL_LOT_LOSS"]
+            },
+            "G3_1_LOT_INFO_REQ": {
+                "name": "Carrier ID Report",
+                "brs": ["BR_PRD_CHK_INPUT_LOT_NT_L","BR_PRD_CHK_UNLOADER_CSTID_L","BR_PRD_GET_WORKORDER","BR_PRD_SEL_LOT_INFO_BY_CSTID","BR_PRD_CHK_INPUT_LOT_MCS_L"]
+            },
+            "G2_6_CARR_JOB_END": {
+                "name": "Carrier Job End Report",
+                "brs": ["BR_PRD_REG_CHG_SLIT_SIDE_ROLL_DIR_EIF","BR_PRD_REG_CSTID_EMPTY_AS","BR_MCS_REG_CARRIER_ABNORM_LIST"]
+            },
+            "S6_1_SHIFT_CHG_RPT": {
+                "name": "Shift Change Report",
+                "brs": ["BR_QCA_REG_EQPT_DATA_CLCT"]
+            },
+        },
+        "ROLLMAP": {
+            "GRP_LOT_START_RPT": {
+                "name": "Lot Start Report",
+                "brs": ["BR_PRD_REG_RM_EIF_EQPT_START"]
+            },
+            "GRP_LOT_END_RPT": {
+                "name": "Lot End Report",
+                "brs": []
+            },
+            "SECTION_DEF_DATA_RPT": {
+                "name": "Section Defect Data Report",
+                "brs": ["BR_PRD_REG_RM_EIF_PET"]
+            },
+            "DATUM_MARK_DETECT_RPT": {
+                "name": "Datum Point Marking Detection Report",
+                "brs": ["BR_PRD_REG_RM_EIF_MARK_DETECT"]
+            },
+            "ALARM_RPT": {
+                "name": "Alarm Report",
+                "brs": ["BR_PRD_REG_RM_EIF_TENSION_ALARM"]
+            },
+        },
         "RMS": {}
     },
 }
