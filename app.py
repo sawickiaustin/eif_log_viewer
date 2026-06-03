@@ -130,7 +130,7 @@ class LogViewer(QMainWindow):
 
         self.item_list = QListWidget()
         self.item_list.itemClicked.connect(self.on_item_double_clicked)
-        self.right_tabs.addTab(self.item_list, "Item별")
+        self.right_tabs.addTab(self.item_list, "Item")
 
         self.seq_tree = QTreeWidget()
         self.seq_tree.setHeaderLabel("Sequences")
@@ -1224,12 +1224,26 @@ class LogViewer(QMainWindow):
 
 
     def split_item_code(self, item_code):
-        """
-        G2_1_CARR_ID_RPT_01 → (G2_1_CARR_ID_RPT, 01)
-        """
-        match = re.match(r"(.+?)_(\d+)$", item_code)
-        if match:
-            return match.group(1), match.group(2)
+        from db_manager import COMMON_DATA, EQP_DATA
+
+        # Build known bases set (all keys from static data)
+        known_bases = set()
+        for cat_items in COMMON_DATA.values():
+            known_bases.update(cat_items.keys())
+        for eqp_data in EQP_DATA.values():
+            if isinstance(eqp_data, dict):
+                for cat_items in eqp_data.values():
+                    if isinstance(cat_items, dict):
+                        known_bases.update(cat_items.keys())
+
+        # Longest matching prefix wins
+        parts = item_code.split("_")
+        for i in range(len(parts) - 1, 0, -1):
+            base = "_".join(parts[:i])
+            if base in known_bases:
+                suffix = "_".join(parts[i:])
+                return base, suffix
+
         return item_code, None
 
     def reset_all_state(self):
