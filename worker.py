@@ -12,23 +12,49 @@ from concurrent.futures import ProcessPoolExecutor
 # ============================================================
 # HELPER FUNCTIONS (must be at module level for multiprocessing)
 # ============================================================
-def _extract_item_code(raw):
+
+KNOWN_EQUIPMENTS = ["MIX","COT","ROL","RWD","TRS","SLT","NND","LAM","PKG","CESS"]
+
+def _detect_equipment(raw):
     try:
-        parts = raw.split("[")
-        for part in parts:
-            if ":" in part and "]" in part:
-                block = part.split("]")[0]
-                return block.split(":")[0]
+        for part in raw.split("["):
+            if "." in part and "]" in part:
+                prefix = part.split("]")[0].split(".")[0].upper()
+                for eq in KNOWN_EQUIPMENTS:
+                    if eq in prefix:
+                        return eq
     except Exception:
         pass
     return None
+
+def _extract_item_code(raw):
+    try:
+        # Only look at the structural part, before the value
+        structural = raw.split(" : ")[0] if " : " in raw else raw
+        
+        parts = structural.split("[")
+        result = None
+        for part in parts:
+            if ":" in part and "]" in part:
+                block = part.split("]")[0]
+                candidate = block.split(":")[0]
+                # Skip system blocks (contain dots like "DNC1_1.IO_DNC")
+                if "." not in candidate:
+                    result = candidate
+        return result
+    except Exception:
+        pass
+    return None
+
 def _parse_item_signal(raw):
     try:
-        block = raw.split("[")[-1].split("]")[0]
+        structural = raw.split(" : ")[0] if " : " in raw else raw
+        block = structural.split("[")[-1].split("]")[0]
         item, signal = block.split(":")
         return item, signal
     except:
         return None, None
+
 def _parse_value(raw):
     try:
         if " : " in raw:
@@ -55,7 +81,7 @@ def _process_variable_chunk(filepath, start_line, end_line):
     ack_events = {} 
     buffer_sec = 1
     
-    KNOWN_EQUIPMENTS = ["MIX", "COT", "ROL", "RWD", "TRS","NND"]
+    KNOWN_EQUIPMENTS = ["MIX","COT","ROL","RWD","TRS","SLT","NND","LAM","CESS","PKG"]
     
     with open(filepath, "r", encoding="utf-8-sig", errors="ignore") as f:
         for idx, raw in enumerate(f):
@@ -121,11 +147,10 @@ def _process_variable_chunk(filepath, start_line, end_line):
                     break
             
             # Parse equipment
-            for eq in KNOWN_EQUIPMENTS:
-                if eq in raw:
-                    log.equipment = eq
-                    eqp_set.add(eq)
-                    break
+            eqp = _detect_equipment(raw)
+            log.equipment = eqp
+            if eqp:
+                eqp_set.add(eqp)
             
             # Item code
             item_code = _extract_item_code(raw)
@@ -407,7 +432,7 @@ class VariableLogWorker(QThread):
     finished = Signal(list, list, dict, object, int, dict, dict)
     # emits: (sorted_logs, sorted_timestamps, item_index, current_equipment, skipped_count, sequences, item_categories)
 
-    KNOWN_EQUIPMENTS = ["MIX", "COT", "ROL", "RWD", "TRS","NND"]
+    KNOWN_EQUIPMENTS = ["MIX","COT","ROL","RWD","TRS","SLT","NND","LAM","CESS","PKG"]
 
     def __init__(self, filepath):
         super().__init__()
@@ -572,11 +597,7 @@ class VariableLogWorker(QThread):
                         break
 
                 # Equipment
-                eqp = None
-                for eq in self.KNOWN_EQUIPMENTS:
-                    if eq in raw:
-                        eqp = eq
-                        break
+                eqp = _detect_equipment(raw)
                 log.equipment = eqp
                 if eqp:
                     eqp_set.add(eqp)
