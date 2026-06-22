@@ -56,21 +56,31 @@ class LogViewer(QMainWindow):
         # -------------------
         # Search + Period
         # -------------------
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("검색어 입력")
-        self.search_input.textChanged.connect(self.search_logs)
+        self.search_and_input = QLineEdit()
+        self.search_and_input.setPlaceholderText("AND 검색 (쉼표로 구분)")
+        self.search_and_input.returnPressed.connect(self._execute_search)
 
+        self.search_or_input = QLineEdit()
+        self.search_or_input.setPlaceholderText("OR 검색 (쉼표로 구분)")
+        self.search_or_input.returnPressed.connect(self._execute_search)
+        
         self.period_button = QPushButton()
         self.update_period_button()
         self.period_button.clicked.connect(self.open_period_dialog)
 
+        self.search_button = QPushButton("Search")
+        self.search_button.clicked.connect(self._execute_search)
+
         top = QVBoxLayout()
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("검색"))
-        row.addWidget(self.search_input)
+        row.addWidget(QLabel("AND"))
+        row.addWidget(self.search_and_input)
+        row.addWidget(QLabel("OR"))
+        row.addWidget(self.search_or_input)
         row.addWidget(QLabel("기간"))
         row.addWidget(self.period_button)
+        row.addWidget(self.search_button)
 
         top.addLayout(row)
 
@@ -142,9 +152,6 @@ class LogViewer(QMainWindow):
         self.search_timer = QTimer()
         self.search_timer.setSingleShot(True)
         self.search_timer.timeout.connect(self._execute_search)
-
-        self.search_input.textChanged.disconnect()
-        self.search_input.textChanged.connect(self.schedule_search)
 
         # -------------------
         # Layout
@@ -369,7 +376,6 @@ class LogViewer(QMainWindow):
         if dlg.exec():
             self.period_start, self.period_end = dlg.get_period()
             self.update_period_button()
-            self.search_logs()
 
     # -------------------
     # Display Logs
@@ -385,50 +391,48 @@ class LogViewer(QMainWindow):
 
     def search_logs(self):
         import bisect
-        keyword = self.search_input.text().strip()
-        keyword_lower = keyword.casefold()
+
+        and_raw = self.search_and_input.text().strip()
+        or_raw  = self.search_or_input.text().strip()
+
+        and_terms = [t.strip().casefold() for t in and_raw.split(",") if t.strip()]
+        or_terms  = [t.strip().casefold() for t in or_raw.split(",")  if t.strip()]
 
         start = self.period_start.toPython()
-        end = self.period_end.toPython()
+        end   = self.period_end.toPython()
 
-        # ------------------------------------
-        # FAST TIME FILTER (🔥 binary search)
-        # ------------------------------------
         start_ts = start.timestamp()
-        end_ts = end.timestamp()
+        end_ts   = end.timestamp()
 
-        left = bisect.bisect_left(self.variable_timestamps, start_ts)
+        left  = bisect.bisect_left(self.variable_timestamps, start_ts)
         right = bisect.bisect_right(self.variable_timestamps, end_ts)
-
         subset = self.variable_logs[left:right]
 
-        # ------------------------------------
-        # Filter subset only (FAST)
-        # ------------------------------------
         result = []
-
         for log in subset:
+            raw_lower = log.raw_lower
 
-            if keyword_lower:
-                if keyword_lower not in log.raw_lower:
-                    continue
+            # AND: every term must match
+            if and_terms and not all(t in raw_lower for t in and_terms):
+                continue
+
+            # OR: at least one term must match (skip check if no OR terms)
+            if or_terms and not any(t in raw_lower for t in or_terms):
+                continue
 
             result.append(log)
 
         self.display_logs(result)
 
-        # ------------------------------------
-        # BR filtering (OPTIMIZED)
-        # ------------------------------------
+        # BR sync
         if not self.br_tab.br_calls:
             return
 
-        if not keyword:
+        if not and_terms and not or_terms:
             self.br_tab.show_brs_in_timerange(start_ts, end_ts)
             return
 
-        br_results = self.br_tab.search_brs(keyword_lower, start_ts, end_ts)
-
+        br_results = self.br_tab.search_brs_multi(and_terms, or_terms, start_ts, end_ts)
         if br_results:
             self.br_tab.populate_tree_from_executions(br_results)
         else:
@@ -699,9 +703,12 @@ class LogViewer(QMainWindow):
         # ---------------------------------
         # Clear search
         # ---------------------------------
-        self.search_input.blockSignals(True)
-        self.search_input.clear()
-        self.search_input.blockSignals(False)
+        self.search_and_input.blockSignals(True)
+        self.search_or_input.blockSignals(True)
+        self.search_and_input.clear()
+        self.search_or_input.clear()
+        self.search_and_input.blockSignals(False)
+        self.search_or_input.blockSignals(False)
 
         self.update_period_from_logs()
 
@@ -878,9 +885,12 @@ class LogViewer(QMainWindow):
         # ----------------------------
         # Reset search (no re-trigger)
         # ----------------------------
-        self.search_input.blockSignals(True)
-        self.search_input.clear()
-        self.search_input.blockSignals(False)
+        self.search_and_input.blockSignals(True)
+        self.search_or_input.blockSignals(True)
+        self.search_and_input.clear()
+        self.search_or_input.clear()
+        self.search_and_input.blockSignals(False)
+        self.search_or_input.blockSignals(False)
 
         self.update_period_from_logs()
 
@@ -930,9 +940,12 @@ class LogViewer(QMainWindow):
     def on_item_double_clicked(self, item_widget):
         data = item_widget.data(Qt.UserRole)
 
-        self.search_input.blockSignals(True)
-        self.search_input.clear()
-        self.search_input.blockSignals(False)
+        self.search_and_input.blockSignals(True)
+        self.search_or_input.blockSignals(True)
+        self.search_and_input.clear()
+        self.search_or_input.clear()
+        self.search_and_input.blockSignals(False)
+        self.search_or_input.blockSignals(False)
 
         self.update_period_from_logs()
 
@@ -1278,9 +1291,12 @@ class LogViewer(QMainWindow):
         self.seq_tree.clear()
     
         # Clear search
-        self.search_input.blockSignals(True)
-        self.search_input.clear()
-        self.search_input.blockSignals(False)
+        self.search_and_input.blockSignals(True)
+        self.search_or_input.blockSignals(True)
+        self.search_and_input.clear()
+        self.search_or_input.clear()
+        self.search_and_input.blockSignals(False)
+        self.search_or_input.blockSignals(False)
     
         # Reset period to default
         self.period_start = QDateTime.currentDateTime().addSecs(-3600)
@@ -1308,4 +1324,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     w = LogViewer()
     w.show()
-    sys.exit(app.exec())
+    sys.exit(app.exec());

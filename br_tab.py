@@ -355,6 +355,22 @@ class BRTab(QWidget):
 
         return results
 
+    def search_brs_multi(self, and_terms, or_terms, start_ts, end_ts):
+        results = []
+        for execution in self.br_calls:
+            ts = execution["ts_val"]
+            if not (start_ts <= ts <= end_ts):
+                continue
+            blob = execution.get("search_blob", "")
+
+            if and_terms and not all(t in blob for t in and_terms):
+                continue
+            if or_terms and not any(t in blob for t in or_terms):
+                continue
+
+            results.append(execution)
+        return results
+
     def highlight_br_executions(self, executions):
         if not executions:
             return
