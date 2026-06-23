@@ -74,12 +74,12 @@ class LogViewer(QMainWindow):
         top = QVBoxLayout()
 
         row = QHBoxLayout()
-        row.addWidget(QLabel("AND"))
-        row.addWidget(self.search_and_input)
-        row.addWidget(QLabel("OR"))
-        row.addWidget(self.search_or_input)
-        row.addWidget(QLabel("기간"))
+        row.addWidget(QLabel("Period"))
         row.addWidget(self.period_button)
+        row.addWidget(QLabel("Match-AND"))
+        row.addWidget(self.search_and_input)
+        row.addWidget(QLabel("Match-OR"))
+        row.addWidget(self.search_or_input)
         row.addWidget(self.search_button)
 
         top.addLayout(row)
@@ -1321,6 +1321,9 @@ class LogViewer(QMainWindow):
         self.db.clear_all()
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     app = QApplication(sys.argv)
     w = LogViewer()
     w.show()
