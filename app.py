@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QLineEdit, QPushButton,
     QTabWidget, QTreeWidget, QTreeWidgetItem, QListView,QMessageBox
 )
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon
 from PySide6.QtCore import QDateTime, Qt, QAbstractListModel, QModelIndex
 
 from parser import load_log_file
@@ -26,6 +26,8 @@ class LogViewer(QMainWindow):
 
         self.setWindowTitle("EIF 로그 뷰어")
         self.resize(1200, 800)
+
+        self.setWindowIcon(QIcon("icon.ico"))
 
         self.KNOWN_EQUIPMENTS = ["MIX", "COT", "ROL", "RWD", "TRS"]
 
