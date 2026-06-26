@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor
 # HELPER FUNCTIONS (must be at module level for multiprocessing)
 # ============================================================
 
-KNOWN_EQUIPMENTS = ["MIX","COT","ROL","RWD","TRS","SLT","NND","LAM","PKG","CESS"]
+KNOWN_EQUIPMENTS = ["MIX","COT","ROL","RWD","TRS","SLT","NND","LAM","STK","PKG","CESS"]
 
 def _detect_equipment(raw):
     try:

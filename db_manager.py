@@ -1040,6 +1040,44 @@ EQP_DATA = {
         "ROLLMAP": {},
         "RMS": {}
     },
+    "STK": {
+        "EQP": {
+            "G3_1_LOT_INFO_REQ": {
+                "name": "Lot Information Request",
+                "brs": ["BR_PRD_REG_NEW_PROD_LOT_RWK","BR_PRD_GET_NEW_PROD_LOTID_FD_L","BR_PRD_GET_WORKORDER"]
+            },
+            "G3_2_LOT_START_RPT": {
+                "name": "Lot Start Report",
+                "brs": ["BR_PRD_REG_START_RWK_PROD_LOT","BR_PRD_REG_START_PROD_LOT_FD_L","BR_PRD_CHK_INPUT_LOT_RWK_ST_L","BR_PRD_CHK_INPUT_LOT_FD_L","BR_PRD_GET_NEW_OUT_LOTID_FD_L","BR_PRD_REG_START_OUT_LOT_FD_L"]
+            },
+            "G3_3_LOT_END_RPT": {
+                "name": "Lot End Report",
+                "brs": ["BR_PRD_REG_CREATE_OUT_LOT_RWK_ST_L","BR_PRD_REG_EQPT_END_OUT_LOT_FD_L","BR_PRD_REG_EQPT_END_PROD_LOT_RWK_FOL_STK_L","BR_PRD_REG_EQPT_END_PROD_LOT_FD_L","BR_QCA_REG_EQPT_DATA_CLCT","BR_PRD_REG_EQPT_WIPQTY_INPUT_LOT"]
+            },
+            "G2_1_CARR_ID_RPT": {
+                "name": "Carrier ID Report",
+                "brs": ["BR_PRD_CHK_INPUT_LOT_RWK_ST_L","BR_PRD_CHK_INPUT_LOT_FD_L","BR_PRD_REG_EQPT_SCAN_RSLT"]
+            },
+            "G2_2_CARR_JOB_START": {
+                "name": "Carrier Job Start Report",
+                "brs": ["BR_PRD_CHK_INPUT_LOT_RWK_ST_L","BR_PRD_CHK_INPUT_LOT_FD_L","BR_PRD_GET_NEW_OUT_LOTID_FD_L","BR_PRD_REG_START_OUT_LOT_FD_L"]
+            },
+            "G2_3_CARR_OUT_RPT": {
+                "name": "Carrier Output Report",
+                "brs": ["BR_PRD_REG_UNMOUNT_INPUT_IN_LOT_L","BR_PRD_REG_LOAD_REP_LOTID_L"]
+            },
+            "G2_6_CARR_JOB_END": {
+                "name": "Carrier Job End Report",
+                "brs": ["BR_PRD_REG_CREATE_OUT_LOT_RWK_ST_L","BR_PRD_REG_EQPT_END_OUT_LOT_FD_L"]
+            },
+            "G4_3_CELL_OUT_RPT": {
+                "name": "Cell Output Report",
+                "brs": ["BR_PRD_REG_EQPT_CELL_DFCT_CLCT_L"]
+            },
+        },
+        "ROLLMAP": {},
+        "RMS": {}
+    },
     "CESS": {
         "EQP": {
             "G1_2_MTRL_ID_REQ": {

@@ -24,7 +24,7 @@ class LogViewer(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("EIF 로그 뷰어")
+        self.setWindowTitle("EIF Log Viewer")
         self.resize(1200, 800)
 
         self.setWindowIcon(QIcon("icon.ico"))
@@ -59,11 +59,11 @@ class LogViewer(QMainWindow):
         # Search + Period
         # -------------------
         self.search_and_input = QLineEdit()
-        self.search_and_input.setPlaceholderText("AND 검색 (쉼표로 구분)")
+        self.search_and_input.setPlaceholderText("Include all (comma-separated)")
         self.search_and_input.returnPressed.connect(self._execute_search)
 
         self.search_or_input = QLineEdit()
-        self.search_or_input.setPlaceholderText("OR 검색 (쉼표로 구분)")
+        self.search_or_input.setPlaceholderText("Include any (comma-separated)")
         self.search_or_input.returnPressed.connect(self._execute_search)
         
         self.period_button = QPushButton()
@@ -223,6 +223,12 @@ class LogViewer(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        # ── Help menu ──────────────────────────────────
+        help_menu = bar.addMenu("Help")
+        about_action = QAction("About Log Types...", self)
+        about_action.triggered.connect(self.show_help_dialog)
+        help_menu.addAction(about_action)
+
 
     def load_br_log(self, path):
         valid = False
@@ -245,6 +251,64 @@ class LogViewer(QMainWindow):
         # Pass path to BR tab
         self.br_tab.load_full_logs(path)
 
+    def show_help_dialog(self):
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QPushButton
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Help — Log Types")
+        dlg.resize(600, 500)
+
+        text = QTextBrowser()
+        text.setOpenExternalLinks(False)
+        text.setHtml("""
+    <h2>Variable Log</h2>
+    <p>A <b>Variable Log</b> records the real-time state changes of equipment items (variables)
+    during production. Each line contains a timestamp, a system identifier, an item code,
+    a signal name, and the new value.</p>
+    <p><b>Variable Trace Log Path Example</b></p>
+    <p>D:\Logs\A1EROL101\ezControl\System\VARIABLE_TRACE\VARIABLE_TRACE_0115.log</p>
+    <p><b>Example Log Line:</b></p>
+    <pre>2024-01-15 08:32:11 [A1EROL101.Elm][ITEM_A:I_B_TRIGGER_REPORT] : ON</pre>
+
+    <hr>
+
+    <h2>BR Log (Business Rule Log)</h2>
+    <p>A <b>BR Log</b> records calls to Business Rules (BR) — the logic layer that processes
+    equipment events and makes decisions. Each entry captures the full request (input tables)
+    and reply (output tables) of a BR execution.</p>
+    <p><b>BR Log Path Example</b></p>
+    <p>D:\Logs\A1EROL101\ezControl\A1EROL101_0115.log</p>
+    <p><b>Example Log Line:</b></p>
+    <pre>
+    2024-01-15 08:32:11 [Info] [A1EROL101] (REQUESTQ) PROC_TYPE/LGES_PRD_MES/MES_EIF/ELTR
+    (abc125323-21b1-426e-8b28-57c080b1cf93) : {
+      "actID": "BR_PRD_REG_EQPT_WIPQTY",
+      "refDS": "{\"IN_EQP\":[{\"SRCTYPE\":\"EQ\",\"IFMODE\":\"ON\",\"EQPTID\":\"A1EROL101\",\"USERID\":\"EIF\"}]}",
+      "inDTName": "IN_EQP",
+      "outDTName": "",
+      "TXN_ID": "20240115000000123123123123"
+    }
+
+    2024-01-15 08:32:13 [Info] [A1EROL101] (RECEIVE_REPLYQ) REPLY/PROC_TYPE/LGES_PRD_MES/MES_EIF/ELTR
+    (abc125323-21b1-426e-8b28-57c080b1cf93) : {
+      "actID":"BR_PRD_REG_EQPT_WIPQTY","schema":{}}</pre>
+
+    <hr>
+
+    <h2>Using them together</h2>
+    <p>Load a Variable Log and BR Log together via <b>File → Add Variable + BR Log</b>.<br>
+    Clicking a sequence in the Sequence tab will automatically highlight the corresponding
+    BR calls that fired during that time window.</p>
+    """)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+
+        main_layout = QVBoxLayout(dlg)
+        main_layout.addWidget(text)
+        main_layout.addWidget(close_btn)
+
+        dlg.exec()
     # -------------------
     # File Loading
     # -------------------

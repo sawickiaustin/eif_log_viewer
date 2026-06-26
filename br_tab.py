@@ -36,6 +36,11 @@ class BRTab(QWidget):
         # Tree
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Business Rules"])
+
+        self.tree.setSortingEnabled(True)
+        self.tree.sortByColumn(0, Qt.AscendingOrder)
+        self.tree.setSortingEnabled(False)
+
         self.tree.itemExpanded.connect(self.on_item_expanded)
         self.tree.itemClicked.connect(self.on_br_clicked)
         layout.addWidget(self.tree)
@@ -67,6 +72,8 @@ class BRTab(QWidget):
             self._render_page()
 
     def _next_page(self):
+        if not self._all_executions:
+            return
         max_page = (len(self._all_executions) - 1) // PAGE_SIZE
         if self._current_page < max_page:
             self._current_page += 1
@@ -83,10 +90,11 @@ class BRTab(QWidget):
     
         # Update nav controls
         self.prev_btn.setEnabled(self._current_page > 0)
-        self.next_btn.setEnabled(self._current_page < max_page)
+        self.next_btn.setEnabled(total > 0 and self._current_page < max_page)
         self.page_label.setText(
             f"Page {self._current_page + 1} of {max_page + 1}  "
             f"(showing {start + 1}–{min(end, total)} of {total:,})"
+            if total > 0 else "No results"
         )
 
         # Render chunk
@@ -112,9 +120,10 @@ class BRTab(QWidget):
             root_item.addChild(QTreeWidgetItem(["Loading..."]))
             items.append(root_item)
 
-        self.tree.addTopLevelItems(items)
-        self.tree.setSortingEnabled(True)
-        self.tree.setUpdatesEnabled(True)
+            self.tree.addTopLevelItems(items)
+            self.tree.setSortingEnabled(True)
+            self.tree.sortByColumn(0, Qt.AscendingOrder)
+            self.tree.setUpdatesEnabled(True)
 
     def load_full_logs(self, filepath):
         self.full_br_logs = []
