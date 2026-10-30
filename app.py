@@ -1,4 +1,5 @@
 ﻿#app.py
+import os
 import sys
 import re
 from datetime import datetime, timedelta
@@ -7,10 +8,11 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QListWidget, QListWidgetItem,
     QHBoxLayout, QLabel, QVBoxLayout, QMainWindow,
     QFileDialog, QLineEdit, QPushButton,
-    QTabWidget, QTreeWidget, QTreeWidgetItem, QListView,QMessageBox
+    QTabWidget, QTreeWidget, QTreeWidgetItem, QListView, QMessageBox,
+    QStackedWidget, QDialog, QTextBrowser
 )
-from PySide6.QtGui import QAction, QIcon
-from PySide6.QtCore import QDateTime, Qt, QAbstractListModel, QModelIndex
+from PySide6.QtGui import QAction, QIcon, QKeySequence
+from PySide6.QtCore import QDateTime, Qt, QAbstractListModel, QModelIndex, Signal
 
 from parser import load_log_file
 from period_dialog import PeriodDialog
@@ -20,14 +22,27 @@ from PySide6.QtCore import QTimer
 from model import LogListModel
 from worker import VariableLogWorker
 
-class LogViewer(QMainWindow):
-    def __init__(self):
+def resource_path(name):
+    """Path to a bundled file, both from source and inside a PyInstaller exe."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+# ============================================================
+# One tab = one log session (its own logs, BR calls, DB, workers)
+# ============================================================
+class LogSession(QWidget):
+    titleChanged = Signal(object)          # emits self; LogViewer refreshes the tab text
+
+    def __init__(self, main_window):
         super().__init__()
+        self.main = main_window
 
-        self.setWindowTitle("EIF Log Viewer")
-        self.resize(1200, 800)
-
-        self.setWindowIcon(QIcon("icon.ico"))
+        self.var_path = None
+        self.br_path = None
+        self.var_loading = False
+        self.br_loading = False
+        self._var_worker = None
 
         self.KNOWN_EQUIPMENTS = ["MIX", "COT", "ROL", "RWD", "TRS"]
 
@@ -51,9 +66,6 @@ class LogViewer(QMainWindow):
 
         self.period_start = QDateTime.currentDateTime().addSecs(-3600)
         self.period_end = QDateTime.currentDateTime()
-
-        central = QWidget()
-        self.setCentralWidget(central)
 
         # -------------------
         # Search + Period
@@ -166,70 +178,74 @@ class LogViewer(QMainWindow):
         layout.addLayout(top)
         layout.addLayout(body)
 
-        central.setLayout(layout)
+        layout.setContentsMargins(6, 6, 6, 6)
+        self.setLayout(layout)
 
-        self.db = DBManager()
+        # Each session has its own in-memory DB: two tabs can be different equipment
+        self.db = DBManager(":memory:")
 
-        self.create_menu()
-        self.statusBar().showMessage("Ready")
+    # -------------------
+    # Session helpers
+    # -------------------
+    def _status(self, msg, ms=0):
+        self.main.statusBar().showMessage(msg, ms)
+
+    def title(self):
+        name = os.path.basename(self.var_path or self.br_path or "") or "New session"
+        if self.br_path and self.var_path:
+            name += "  + BR"
+        if self.var_loading or self.br_loading:
+            name = "⏳ " + name
+        return name
+
+    def tooltip(self):
+        parts = []
+        if self.var_path:
+            parts.append(f"Variable: {self.var_path}")
+        if self.br_path:
+            parts.append(f"BR: {self.br_path}")
+        return "\n".join(parts)
+
+    def on_br_loaded(self):
+        """Called by BRTab when its worker finishes."""
+        self.br_loading = False
+        self.br_logs_loading_finished = True
+        if self.current_tab == "BR Logs":
+            self.build_br_list()
+        self._status(f"Loaded {len(self.br_tab.br_calls):,} BR calls.", 4000)
+        self.titleChanged.emit(self)
+
+    def running_workers(self):
+        workers = [self._var_worker, getattr(self.br_tab, "_br_worker", None)]
+        return [w for w in workers if w is not None and w.isRunning()]
+
+    def shutdown(self):
+        """
+        Detach still-running workers so their results are dropped when they finish,
+        and hand them back so the window can keep them alive until then (a QThread
+        destroyed while running crashes the app).
+        """
+        running = self.running_workers()
+        for w in running:
+            try:
+                w.finished.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        # Drop the big data now rather than when Python gets around to it
+        self.variable_logs = []
+        self.variable_timestamps = []
+        self.item_index = {}
+        self.sequences = {}
+        self.br_tab.br_calls = []
+        self.br_tab._all_executions = []
+        self.br_tab.sorted_executions = []
+        self.br_tab.br_name_index = {}
+        self.br_tab.search_buf = None
+        return running
 
     # -------------------
     # Menu
     # -------------------
-    def open_variable_and_br_log(self):
-        # -------------------------
-        # Select Variable file
-        # -------------------------
-        var_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Variable Log", "", "Log Files (*.log)"
-        )
-
-        if not var_path:
-            return
-
-        # -------------------------
-        # Select BR file
-        # -------------------------
-        br_path, _ = QFileDialog.getOpenFileName(
-            self, "Select BR Log", "", "Log Files (*.log)"
-        )
-
-        if not br_path:
-            return
-
-        # -------------------------
-        # Load BOTH (important order)
-        # -------------------------
-        self.load_variable_log(var_path)
-        self.load_br_log(br_path)
-
-    def create_menu(self):
-        bar = self.menuBar()
-        file_menu = bar.addMenu("File")
-
-        # 1️⃣ Variable only
-        open_var_action = QAction("Add Variable Log...", self)
-        open_var_action.triggered.connect(self.open_variable_log)
-        file_menu.addAction(open_var_action)
-
-        # 2️⃣ Variable + BR together
-        open_pair_action = QAction("Add Variable + BR Log...", self)
-        open_pair_action.triggered.connect(self.open_variable_and_br_log)
-        file_menu.addAction(open_pair_action)
-
-        file_menu.addSeparator()
-
-        exit_action = QAction("Exit", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-
-        # ── Help menu ──────────────────────────────────
-        help_menu = bar.addMenu("Help")
-        about_action = QAction("About Log Types...", self)
-        about_action.triggered.connect(self.show_help_dialog)
-        help_menu.addAction(about_action)
-
-
     def load_br_log(self, path):
         valid = False
         with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
@@ -246,86 +262,20 @@ class LogViewer(QMainWindow):
                 "Invalid BR Log",
                 "The selected file is not a valid BR log.\n"
             )
-            return
+            return False
+
+        self.br_path = path
+        self.br_loading = True
+        self.br_logs_loading_finished = False
+        self.titleChanged.emit(self)
 
         # Pass path to BR tab
         self.br_tab.load_full_logs(path)
+        return True
 
-    def show_help_dialog(self):
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QPushButton
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Help — Log Types")
-        dlg.resize(600, 500)
-
-        text = QTextBrowser()
-        text.setOpenExternalLinks(False)
-        text.setHtml("""
-    <h2>Variable Log</h2>
-    <p>A <b>Variable Log</b> records the real-time state changes of equipment items (variables)
-    during production. Each line contains a timestamp, a system identifier, an item code,
-    a signal name, and the new value.</p>
-    <p><b>Variable Trace Log Path Example</b></p>
-    <p>D:\Logs\A1EROL101\ezControl\System\VARIABLE_TRACE\VARIABLE_TRACE_0115.log</p>
-    <p><b>Example Log Line:</b></p>
-    <pre>2024-01-15 08:32:11 [A1EROL101.Elm][ITEM_A:I_B_TRIGGER_REPORT] : ON</pre>
-
-    <hr>
-
-    <h2>BR Log (Business Rule Log)</h2>
-    <p>A <b>BR Log</b> records calls to Business Rules (BR) — the logic layer that processes
-    equipment events and makes decisions. Each entry captures the full request (input tables)
-    and reply (output tables) of a BR execution.</p>
-    <p><b>BR Log Path Example</b></p>
-    <p>D:\Logs\A1EROL101\ezControl\A1EROL101_0115.log</p>
-    <p><b>Example Log Line:</b></p>
-    <pre>
-    2024-01-15 08:32:11 [Info] [A1EROL101] (REQUESTQ) PROC_TYPE/LGES_PRD_MES/MES_EIF/ELTR
-    (abc125323-21b1-426e-8b28-57c080b1cf93) : {
-      "actID": "BR_PRD_REG_EQPT_WIPQTY",
-      "refDS": "{\"IN_EQP\":[{\"SRCTYPE\":\"EQ\",\"IFMODE\":\"ON\",\"EQPTID\":\"A1EROL101\",\"USERID\":\"EIF\"}]}",
-      "inDTName": "IN_EQP",
-      "outDTName": "",
-      "TXN_ID": "20240115000000123123123123"
-    }
-
-    2024-01-15 08:32:13 [Info] [A1EROL101] (RECEIVE_REPLYQ) REPLY/PROC_TYPE/LGES_PRD_MES/MES_EIF/ELTR
-    (abc125323-21b1-426e-8b28-57c080b1cf93) : {
-      "actID":"BR_PRD_REG_EQPT_WIPQTY","schema":{}}</pre>
-
-    <hr>
-
-    <h2>Using them together</h2>
-    <p>Load a Variable Log and BR Log together via <b>File → Add Variable + BR Log</b>.<br>
-    Clicking a sequence in the Sequence tab will automatically highlight the corresponding
-    BR calls that fired during that time window.</p>
-    """)
-
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dlg.accept)
-
-        main_layout = QVBoxLayout(dlg)
-        main_layout.addWidget(text)
-        main_layout.addWidget(close_btn)
-
-        dlg.exec()
     # -------------------
     # File Loading
     # -------------------
-    def open_variable_log(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open Variable Log", "", "Log Files (*.log)"
-        )
-        if path:
-            self.load_variable_log(path)
-
-    def open_br_log(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open BR Log", "", "Log Files (*.log)"
-        )
-        if path:
-            self.load_br_log(path)
-
     def is_valid_log_line(self, raw):
         if len(raw) < 19:
             return False
@@ -344,6 +294,9 @@ class LogViewer(QMainWindow):
 
     def load_variable_log(self, path):
         self.reset_all_state()
+        self.var_path = path
+        self.var_loading = True
+        self.titleChanged.emit(self)
 
         # Show loading indicator
         self.log_model.setLogs([])
@@ -394,8 +347,10 @@ class LogViewer(QMainWindow):
             self.build_item_list()
 
         self.variable_logs_loading_finished = True
+        self.var_loading = False
+        self.titleChanged.emit(self)
 
-        self.statusBar().showMessage(
+        self._status(
             f"Loaded {len(self.variable_logs):,} variable log lines.", 4000
         )
 
@@ -502,7 +457,7 @@ class LogViewer(QMainWindow):
         if br_results:
             self.br_tab.populate_tree_from_executions(br_results)
         else:
-            self.br_tab.tree.clear()
+            self.br_tab.clear_tree()
 
     # -------------------
     # Sequence Logic
@@ -1248,7 +1203,7 @@ class LogViewer(QMainWindow):
         # ----------------------------
         # Switch to correct tab first
         # ----------------------------
-        self.left_tabs.setCurrentWidget(self.log_list)
+        self.left_tabs.setCurrentWidget(self.log_container)
 
         # ----------------------------
         # 🔥 CORRECT CENTER SCROLL
@@ -1373,7 +1328,7 @@ class LogViewer(QMainWindow):
         self.update_period_button()
     
         # Clear BR tab
-        self.br_tab.tree.clear()
+        self.br_tab.clear_tree()
         self.br_tab.br_calls = []
         self.br_tab.br_name_index = {}
         self.br_tab.execution_item_map = {}
@@ -1389,6 +1344,273 @@ class LogViewer(QMainWindow):
         # Clear database
         self.db.clear_all()
 
+
+# ============================================================
+# Main window: one tab per log session
+# ============================================================
+class LogViewer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("EIF Log Viewer")
+        self.resize(1200, 800)
+        self.setWindowIcon(QIcon(resource_path("icon.ico")))
+
+        # Sessions
+        self.sessions = QTabWidget()
+        self.sessions.setTabsClosable(True)
+        self.sessions.setMovable(True)
+        self.sessions.setDocumentMode(True)
+        self.sessions.tabCloseRequested.connect(self.close_session)
+        self.sessions.currentChanged.connect(self._on_session_changed)
+
+        # Shown when no sessions are open
+        placeholder = QLabel(
+            "No logs open.\n\n"
+            "File → Open Variable Log…   (Ctrl+O)\n"
+            "File → Open Variable + BR Log…   (Ctrl+Shift+O)"
+        )
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setStyleSheet("QLabel { color: #888; font-size: 14px; }")
+
+        self.stack = QStackedWidget()
+        self.stack.addWidget(placeholder)
+        self.stack.addWidget(self.sessions)
+        self.setCentralWidget(self.stack)
+
+        # Workers from closed tabs that are still parsing. They are kept
+        # referenced until they finish; destroying a running QThread crashes.
+        self._retired_workers = []
+        self._reaper = QTimer(self)
+        self._reaper.timeout.connect(self._reap_workers)
+        self._reaper.start(1000)
+
+        self.create_menu()
+        self.statusBar().showMessage("Ready")
+
+    # -------------------
+    # Menu
+    # -------------------
+    def create_menu(self):
+        bar = self.menuBar()
+        file_menu = bar.addMenu("File")
+
+        open_var_action = QAction("Open Variable Log…", self)
+        open_var_action.setShortcut(QKeySequence("Ctrl+O"))
+        open_var_action.triggered.connect(self.open_variable_log)
+        file_menu.addAction(open_var_action)
+
+        open_pair_action = QAction("Open Variable + BR Log…", self)
+        open_pair_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        open_pair_action.triggered.connect(self.open_variable_and_br_log)
+        file_menu.addAction(open_pair_action)
+
+        self.add_br_action = QAction("Add BR Log to Current Tab…", self)
+        self.add_br_action.setShortcut(QKeySequence("Ctrl+B"))
+        self.add_br_action.triggered.connect(self.add_br_log_to_current)
+        file_menu.addAction(self.add_br_action)
+
+        file_menu.addSeparator()
+
+        self.close_tab_action = QAction("Close Tab", self)
+        self.close_tab_action.setShortcut(QKeySequence("Ctrl+W"))
+        self.close_tab_action.triggered.connect(
+            lambda: self.close_session(self.sessions.currentIndex())
+        )
+        file_menu.addAction(self.close_tab_action)
+
+        file_menu.addSeparator()
+
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        help_menu = bar.addMenu("Help")
+        about_action = QAction("About Log Types…", self)
+        about_action.triggered.connect(self.show_help_dialog)
+        help_menu.addAction(about_action)
+
+        self._update_actions()
+
+    # -------------------
+    # Sessions
+    # -------------------
+    def current_session(self):
+        w = self.sessions.currentWidget()
+        return w if isinstance(w, LogSession) else None
+
+    def new_session(self):
+        session = LogSession(self)
+        session.titleChanged.connect(self._refresh_tab)
+        index = self.sessions.addTab(session, session.title())
+        self.sessions.setCurrentIndex(index)
+        self.stack.setCurrentWidget(self.sessions)
+        self._update_actions()
+        return session
+
+    def _refresh_tab(self, session):
+        index = self.sessions.indexOf(session)
+        if index < 0:
+            return
+        self.sessions.setTabText(index, session.title())
+        self.sessions.setTabToolTip(index, session.tooltip())
+        if session is self.current_session():
+            self._update_window_title()
+
+    def _on_session_changed(self, index):
+        self._update_window_title()
+        self._update_actions()
+
+    def _update_window_title(self):
+        session = self.current_session()
+        if session is None:
+            self.setWindowTitle("EIF Log Viewer")
+        else:
+            self.setWindowTitle(f"EIF Log Viewer — {session.title().lstrip('⏳ ')}")
+
+    def _update_actions(self):
+        has_session = self.current_session() is not None
+        if hasattr(self, "add_br_action"):
+            self.add_br_action.setEnabled(has_session)
+            self.close_tab_action.setEnabled(has_session)
+
+    def close_session(self, index):
+        session = self.sessions.widget(index)
+        if not isinstance(session, LogSession):
+            return
+        self._retired_workers.extend(session.shutdown())
+        self.sessions.removeTab(index)
+        session.deleteLater()
+        if self.sessions.count() == 0:
+            self.stack.setCurrentIndex(0)
+            self.statusBar().showMessage("Ready")
+        self._update_window_title()
+        self._update_actions()
+
+    def _reap_workers(self):
+        if self._retired_workers:
+            self._retired_workers = [w for w in self._retired_workers if w.isRunning()]
+
+    def closeEvent(self, event):
+        running = list(self._retired_workers)
+        for i in range(self.sessions.count()):
+            running.extend(self.sessions.widget(i).shutdown())
+        running = [w for w in running if w.isRunning()]
+        if running:
+            # Parsing can't be interrupted mid-way; let it finish so Qt doesn't
+            # abort on a running QThread at exit.
+            self.statusBar().showMessage("Waiting for files still being parsed…")
+            QApplication.processEvents()
+            for w in running:
+                w.wait()
+        event.accept()
+
+    # -------------------
+    # File menu actions (each opens a new tab)
+    # -------------------
+    def open_variable_log(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Variable Log", "", "Log Files (*.log)"
+        )
+        if path:
+            self.new_session().load_variable_log(path)
+
+    def open_variable_and_br_log(self):
+        var_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Variable Log", "", "Log Files (*.log)"
+        )
+        if not var_path:
+            return
+
+        br_path, _ = QFileDialog.getOpenFileName(
+            self, "Select BR Log", os.path.dirname(var_path), "Log Files (*.log)"
+        )
+        if not br_path:
+            return
+
+        session = self.new_session()
+        session.load_variable_log(var_path)
+        session.load_br_log(br_path)
+
+    def add_br_log_to_current(self):
+        session = self.current_session()
+        if session is None:
+            return
+        if session.br_loading:
+            QMessageBox.information(self, "BR Log", "This tab is still loading its BR log.")
+            return
+
+        start_dir = os.path.dirname(session.var_path or session.br_path or "")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add BR Log", start_dir, "Log Files (*.log)"
+        )
+        if path:
+            session.load_br_log(path)
+
+    # -------------------
+    # Help
+    # -------------------
+    def show_help_dialog(self):
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextBrowser, QPushButton
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Help — Log Types")
+        dlg.resize(600, 500)
+
+        text = QTextBrowser()
+        text.setOpenExternalLinks(False)
+        text.setHtml("""
+    <h2>Variable Log</h2>
+    <p>A <b>Variable Log</b> records the real-time state changes of equipment items (variables)
+    during production. Each line contains a timestamp, a system identifier, an item code,
+    a signal name, and the new value.</p>
+    <p><b>Variable Trace Log Path Example</b></p>
+    <p>D:\\Logs\\A1EROL101\\ezControl\\System\\VARIABLE_TRACE\\VARIABLE_TRACE_0115.log</p>
+    <p><b>Example Log Line:</b></p>
+    <pre>2024-01-15 08:32:11 [A1EROL101.Elm][ITEM_A:I_B_TRIGGER_REPORT] : ON</pre>
+
+    <hr>
+
+    <h2>BR Log (Business Rule Log)</h2>
+    <p>A <b>BR Log</b> records calls to Business Rules (BR) — the logic layer that processes
+    equipment events and makes decisions. Each entry captures the full request (input tables)
+    and reply (output tables) of a BR execution.</p>
+    <p><b>BR Log Path Example</b></p>
+    <p>D:\\Logs\\A1EROL101\\ezControl\\A1EROL101_0115.log</p>
+    <p><b>Example Log Line:</b></p>
+    <pre>
+    2024-01-15 08:32:11 [Info] [A1EROL101] (REQUESTQ) PROC_TYPE/LGES_PRD_MES/MES_EIF/ELTR
+    (abc125323-21b1-426e-8b28-57c080b1cf93) : {
+      "actID": "BR_PRD_REG_EQPT_WIPQTY",
+      "refDS": "{\"IN_EQP\":[{\"SRCTYPE\":\"EQ\",\"IFMODE\":\"ON\",\"EQPTID\":\"A1EROL101\",\"USERID\":\"EIF\"}]}",
+      "inDTName": "IN_EQP",
+      "outDTName": "",
+      "TXN_ID": "20240115000000123123123123"
+    }
+
+    2024-01-15 08:32:13 [Info] [A1EROL101] (RECEIVE_REPLYQ) REPLY/PROC_TYPE/LGES_PRD_MES/MES_EIF/ELTR
+    (abc125323-21b1-426e-8b28-57c080b1cf93) : {
+      "actID":"BR_PRD_REG_EQPT_WIPQTY","schema":{}}</pre>
+
+    <hr>
+
+    <h2>Using them together</h2>
+    <p>Load a Variable Log and BR Log together via <b>File → Open Variable + BR Log</b>.<br>
+    Each file you open gets its own tab, so several sessions can be open side by side.<br>
+    Clicking a sequence in the Sequence tab will automatically highlight the corresponding
+    BR calls that fired during that time window.</p>
+    """)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+
+        main_layout = QVBoxLayout(dlg)
+        main_layout.addWidget(text)
+        main_layout.addWidget(close_btn)
+
+        dlg.exec()
+
+
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
@@ -1396,4 +1618,4 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     w = LogViewer()
     w.show()
-    sys.exit(app.exec());
+    sys.exit(app.exec())

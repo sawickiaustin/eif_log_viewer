@@ -245,14 +245,21 @@ def _process_variable_chunk(filepath, start_line, end_line):
 
                     existing = sequences.setdefault(item, [])
 
-                    # Evict W events inside this B window
-                    existing[:] = [
-                        s for s in existing
-                        if not (
-                            s["type"] == "W"
-                            and new_start <= s["start"] <= new_end
-                        )
-                    ]
+                    # Evict W events inside this B window. Only the tail can qualify:
+                    # entries are appended in log order, and anything older than
+                    # new_start was already handled by the previous B. Scanning just the
+                    # tail keeps this O(1) per sequence instead of O(len(existing)).
+                    k = len(existing)
+                    while k > 0 and existing[k - 1]["start"] >= new_start:
+                        k -= 1
+                    if k < len(existing):
+                        existing[k:] = [
+                            s for s in existing[k:]
+                            if not (
+                                s["type"] == "W"
+                                and new_start <= s["start"] <= new_end
+                            )
+                        ]
 
                     win_lo = seq["start"].timestamp()
                     win_hi = ts.timestamp()
@@ -697,14 +704,21 @@ class VariableLogWorker(QThread):
 
                         existing = sequences.setdefault(item, [])
 
-                        # Evict W events inside this B window
-                        existing[:] = [
-                            s for s in existing
-                            if not (
-                                s["type"] == "W"
-                                and new_start <= s["start"] <= new_end
-                            )
-                        ]
+                        # Evict W events inside this B window. Only the tail can qualify:
+                        # entries are appended in log order, and anything older than
+                        # new_start was already handled by the previous B. Scanning just the
+                        # tail keeps this O(1) per sequence instead of O(len(existing)).
+                        k = len(existing)
+                        while k > 0 and existing[k - 1]["start"] >= new_start:
+                            k -= 1
+                        if k < len(existing):
+                            existing[k:] = [
+                                s for s in existing[k:]
+                                if not (
+                                    s["type"] == "W"
+                                    and new_start <= s["start"] <= new_end
+                                )
+                            ]
 
                         win_lo = seq["start"].timestamp()
                         win_hi = ts.timestamp()

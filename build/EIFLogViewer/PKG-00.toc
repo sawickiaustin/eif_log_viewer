@@ -1,0 +1,67 @@
+('C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+ '뷰어\\build\\EIFLogViewer\\EIFLogViewer.pkg',
+ {'BINARY': True,
+  'DATA': True,
+  'EXECUTABLE': True,
+  'EXTENSION': True,
+  'PYMODULE': True,
+  'PYSOURCE': True,
+  'PYZ': False,
+  'SPLASH': True,
+  'SYMLINK': False},
+ [('pyi-contents-directory _internal', '', 'OPTION'),
+  ('PYZ-00.pyz',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\build\\EIFLogViewer\\PYZ-00.pyz',
+   'PYZ'),
+  ('struct',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\build\\EIFLogViewer\\localpycs\\struct.pyc',
+   'PYMODULE'),
+  ('pyimod01_archive',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\build\\EIFLogViewer\\localpycs\\pyimod01_archive.pyc',
+   'PYMODULE'),
+  ('pyimod02_importers',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\build\\EIFLogViewer\\localpycs\\pyimod02_importers.pyc',
+   'PYMODULE'),
+  ('pyimod03_ctypes',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\build\\EIFLogViewer\\localpycs\\pyimod03_ctypes.pyc',
+   'PYMODULE'),
+  ('pyimod04_pywin32',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\build\\EIFLogViewer\\localpycs\\pyimod04_pywin32.pyc',
+   'PYMODULE'),
+  ('pyiboot01_bootstrap',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\env\\Lib\\site-packages\\PyInstaller\\loader\\pyiboot01_bootstrap.py',
+   'PYSOURCE'),
+  ('pyi_rth_inspect',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\env\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_inspect.py',
+   'PYSOURCE'),
+  ('pyi_rth_multiprocessing',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\env\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_multiprocessing.py',
+   'PYSOURCE'),
+  ('pyi_rth_pkgutil',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\env\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pkgutil.py',
+   'PYSOURCE'),
+  ('pyi_rth_pyside6',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 '
+   '뷰어\\env\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pyside6.py',
+   'PYSOURCE'),
+  ('app',
+   'C:\\Users\\Austin Sawicki\\source\\repos\\EIF 로그 뷰어\\app.py',
+   'PYSOURCE')],
+ 'python311.dll',
+ True,
+ False,
+ False,
+ [],
+ None,
+ None,
+ None)

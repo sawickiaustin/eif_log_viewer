@@ -14,6 +14,7 @@ class BRTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._session = parent         # the LogSession this tab belongs to
 
         layout = QVBoxLayout(self)
 
@@ -61,6 +62,19 @@ class BRTab(QWidget):
         self.execution_by_second = {}      # unused, kept for app.reset_all_state
         self.highlighted_item = None
         self.last_displayed_ids = None
+
+    def clear_tree(self):
+        """
+        Clear the tree AND forget what was displayed. Clearing only the widget
+        left stale rows in execution_item_map and made the next show_all_brs()
+        skip re-rendering, leaving the tab blank.
+        """
+        self.tree.clear()
+        self.execution_item_map.clear()
+        self.highlighted_item = None
+        self.last_displayed_ids = None
+        self._all_executions = []
+        self._current_page = 0
 
     # ------------------------------------------------------------
     # Pagination
@@ -129,8 +143,7 @@ class BRTab(QWidget):
         self.br_name_index = {}
         self.sorted_exec_times = []
         self.sorted_executions = []
-        self._all_executions = []
-        self.tree.clear()
+        self.clear_tree()
         QTreeWidgetItem(self.tree, ["⏳ Parsing BR log…"])
 
         self._br_worker = BRLogWorker(filepath)
@@ -149,14 +162,12 @@ class BRTab(QWidget):
         self.last_displayed_ids = None
         self.populate_tree_from_executions(self.br_calls)
 
-        main = self.window()
-        if hasattr(main, "item_list_mode") and main.current_tab == "BR Logs":
-            main.build_br_list()
-        main.br_logs_loading_finished = True
+        if hasattr(self._session, "on_br_loaded"):
+            self._session.on_br_loaded()
 
     def show_all_brs(self):
         if not self.br_calls:
-            self.tree.clear()
+            self.clear_tree()
             QTreeWidgetItem(self.tree, ["⚠ No BR log loaded"])
             return
         self.populate_tree_from_executions(self.br_calls)
@@ -189,7 +200,7 @@ class BRTab(QWidget):
                     table_item.addChild(QTreeWidgetItem([f"{col}: {val}"]))
 
     def show_expected_brs(self, expected_brs):
-        self.tree.clear()
+        self.clear_tree()
         for br in sorted(expected_brs):
             QTreeWidgetItem(self.tree, [f"{br} (Expected – Not Found)"])
 
@@ -205,7 +216,7 @@ class BRTab(QWidget):
 
     def show_brs_in_timerange(self, start_ts, end_ts, expected_brs=None):
         if not self.br_calls:
-            self.tree.clear()
+            self.clear_tree()
             return
 
         filtered = [
@@ -290,9 +301,8 @@ class BRTab(QWidget):
         if not ts:
             return
 
-        main_window = self.window()
-        if hasattr(main_window, "pending_variable_jump"):
-            main_window.pending_variable_jump = ts
+        if hasattr(self._session, "pending_variable_jump"):
+            self._session.pending_variable_jump = ts
 
     def _position(self, execution):
         """Index of execution in the displayed list (bisect when it is br_calls)."""
