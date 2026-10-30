@@ -279,9 +279,9 @@ def _process_variable_chunk(filepath, start_line, end_line):
     current_eqp = next(iter(eqp_set), None)
     return (logs, item_index, sequences, item_categories, current_eqp, skipped_count)
 
-
+"""
 def _process_br_chunk(filepath, start_line, end_line):
-    """Process a chunk of BR log file."""
+    ""Process a chunk of BR log file.""
     br_calls = []
     full_br_index = {}
     pending = {}
@@ -424,7 +424,7 @@ def _process_br_chunk(filepath, start_line, end_line):
     
     return (br_calls, full_br_index)
 
-
+"""
 # ============================================================
 # Variable Log Worker (with integrated sequence building)
 # ============================================================
@@ -771,6 +771,7 @@ class VariableLogWorker(QThread):
 # ============================================================
 # BR Log Worker
 # ============================================================
+"""
 class BRLogWorker(QThread):
     finished = Signal(list, dict)
 
@@ -788,7 +789,7 @@ class BRLogWorker(QThread):
             self._run_single()
 
     def _run_parallel(self):
-        """Multi-core BR processing."""
+        ""Multi-core BR processing.""
         num_workers = multiprocessing.cpu_count()
         
         # STEP 1: Split file into chunks
@@ -817,7 +818,7 @@ class BRLogWorker(QThread):
         self.finished.emit(all_br_calls, full_br_index)
 
     def _get_file_chunks(self, num_chunks):
-        """Split file into chunks."""
+        ""Split file into chunks.""
         with open(self.filepath, "r", encoding="utf-8-sig", errors="ignore") as f:
             total_lines = sum(1 for _ in f)
         
@@ -832,7 +833,7 @@ class BRLogWorker(QThread):
         return ranges
 
     def _run_single(self):
-        """Single-threaded processing."""
+        ""Single-threaded processing.""
         br_calls = []
         full_br_index = {}
         pending = {}
@@ -969,3 +970,4 @@ class BRLogWorker(QThread):
                     br_calls.append(execution)
         
         self.finished.emit(br_calls, full_br_index)
+"""

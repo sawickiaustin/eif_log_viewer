@@ -30,6 +30,7 @@
     <Compile Include="parser.py" />
     <Compile Include="model.py" />
     <Compile Include="app.py" />
+    <Compile Include="br_worker.py" />
   </ItemGroup>
   <ItemGroup>
     <Interpreter Include="env\">

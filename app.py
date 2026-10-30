@@ -844,10 +844,13 @@ class LogViewer(QMainWindow):
             start = st_ts - buffer_sec
             end = et_ts + buffer_sec
 
+            import bisect
+            times = self.br_tab.sorted_exec_times
+            lo = bisect.bisect_left(times, start)
+            hi = bisect.bisect_left(times, end + 1)
             executions_to_highlight = [
-                e for e in self.br_tab.br_calls
+                e for e in self.br_tab.br_calls[lo:hi]
                 if e["br_name"] in expected_brs
-                and start <= int(e["timestamp"].timestamp()) <= end
             ]
 
             if executions_to_highlight:
