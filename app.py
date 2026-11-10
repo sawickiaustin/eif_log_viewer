@@ -60,6 +60,8 @@ class LogSession(QWidget):
 
         # Separate storage
         self.variable_logs = []
+        self.variable_timestamps = []      # search_logs() needs this even in a BR-only tab
+        self.item_index = {}
         self.br_logs = []
         self.sequences = {}
         self.item_categories = {} 
@@ -210,6 +212,15 @@ class LogSession(QWidget):
         """Called by BRTab when its worker finishes."""
         self.br_loading = False
         self.br_logs_loading_finished = True
+
+        # No variable log to take the period from: use the BR file's own range,
+        # otherwise the default "last hour" period hides every BR call.
+        if not self.var_path and self.br_tab.sorted_exec_times:
+            times = self.br_tab.sorted_exec_times
+            self.period_start = QDateTime.fromMSecsSinceEpoch(int(times[0] * 1000))
+            self.period_end = QDateTime.fromMSecsSinceEpoch(int(times[-1] * 1000)).addSecs(1)
+            self.update_period_button()
+
         if self.current_tab == "BR Logs":
             self.build_br_list()
         self._status(f"Loaded {len(self.br_tab.br_calls):,} BR calls.", 4000)
@@ -267,6 +278,7 @@ class LogSession(QWidget):
         self.br_path = path
         self.br_loading = True
         self.br_logs_loading_finished = False
+        self.item_list_built_br = False    # rebuild the BR name list from the new file
         self.titleChanged.emit(self)
 
         # Pass path to BR tab
@@ -293,7 +305,8 @@ class LogSession(QWidget):
         return True
 
     def load_variable_log(self, path):
-        self.reset_all_state()
+        # Only clear variable-side state, so a BR log already in this tab stays loaded
+        self.reset_variable_state()
         self.var_path = path
         self.var_loading = True
         self.titleChanged.emit(self)
@@ -1283,51 +1296,59 @@ class LogSession(QWidget):
 
         return item_code, None
 
-    def reset_all_state(self):
-        # Reset data structures
-        self.variable_logs = []
-        self.variable_timestamps = []
-        self.br_logs = []
-        self.sequences = {}
-        self.item_categories = {} 
-        self.items = set()
-        self.item_index = {}
-        self.br_names = []
-        self.variable_logs_loading_finished = False
-        self.br_logs_loading_finished = False
-    
-        # Reset cache flags
-        self.br_list_built = False
-        self.item_list_built = False
-        self.item_list_built_variable = False
-        self.item_list_built_br = False
-        self.item_list_mode = None
-        self.sequence_tree_built = False
-    
-        # Reset pending actions
-        self.pending_br_jump_ts = None
-        self.pending_br_highlight = None
-        self.pending_variable_jump = None
-    
-        # Clear UI elements
-        self.log_model.setLogs([])
-        self.item_list.clear()
-        self.seq_tree.clear()
-    
-        # Clear search
+    def _clear_search_inputs(self):
         self.search_and_input.blockSignals(True)
         self.search_or_input.blockSignals(True)
         self.search_and_input.clear()
         self.search_or_input.clear()
         self.search_and_input.blockSignals(False)
         self.search_or_input.blockSignals(False)
-    
-        # Reset period to default
-        self.period_start = QDateTime.currentDateTime().addSecs(-3600)
-        self.period_end = QDateTime.currentDateTime()
-        self.update_period_button()
-    
-        # Clear BR tab
+
+    def reset_variable_state(self):
+        """Clear everything that came from the variable log. The BR log stays loaded."""
+        self.variable_logs = []
+        self.variable_timestamps = []
+        self.sequences = {}
+        self.item_categories = {}
+        self.items = set()
+        self.item_index = {}
+        self.variable_logs_loading_finished = False
+
+        # Reset cache flags
+        self.item_list_built = False
+        self.item_list_built_variable = False
+        self.sequence_tree_built = False
+
+        # Pending jumps/highlights were worked out from the old variable log
+        self.pending_br_jump_ts = None
+        self.pending_br_highlight = None
+        self.pending_variable_jump = None
+
+        # Clear UI elements
+        self.log_model.setLogs([])
+        self.seq_tree.clear()
+        if self.current_tab == "Variable Logs":
+            self.item_list.clear()        # on the BR tab this list shows BR names: keep it
+
+        self._clear_search_inputs()
+
+        # The item → BR mapping comes from the variable log's equipment
+        self.db.clear_all()
+
+        # Search was cleared, so show every BR call again (if a BR log is loaded)
+        self.br_tab.clear_highlight()
+        if self.br_tab.br_calls:
+            self.br_tab.show_all_brs()
+
+    def reset_br_state(self):
+        """Clear everything that came from the BR log."""
+        self.br_logs = []
+        self.br_names = []
+        self.br_logs_loading_finished = False
+        self.br_list_built = False
+        self.item_list_built_br = False
+        self.item_list_mode = None
+
         self.br_tab.clear_tree()
         self.br_tab.br_calls = []
         self.br_tab.br_name_index = {}
@@ -1340,9 +1361,17 @@ class LogSession(QWidget):
         self.br_tab._all_executions = []
         self.br_tab._current_page = 0
         self.br_tab.page_label.setText("Page 1 of 1")
-    
-        # Clear database
-        self.db.clear_all()
+
+    def reset_all_state(self):
+        """Clear both the variable log and the BR log."""
+        self.reset_br_state()
+        self.reset_variable_state()
+        self.item_list.clear()
+
+        # Reset period to default
+        self.period_start = QDateTime.currentDateTime().addSecs(-3600)
+        self.period_end = QDateTime.currentDateTime()
+        self.update_period_button()
 
 
 # ============================================================
@@ -1368,7 +1397,8 @@ class LogViewer(QMainWindow):
         placeholder = QLabel(
             "No logs open.\n\n"
             "File → Open Variable Log…   (Ctrl+O)\n"
-            "File → Open Variable + BR Log…   (Ctrl+Shift+O)"
+            "File → Open Variable + BR Log…   (Ctrl+Shift+O)\n"
+            "File → Open BR Log…   (Ctrl+Shift+B)"
         )
         placeholder.setAlignment(Qt.AlignCenter)
         placeholder.setStyleSheet("QLabel { color: #888; font-size: 14px; }")
@@ -1400,13 +1430,25 @@ class LogViewer(QMainWindow):
         open_var_action.triggered.connect(self.open_variable_log)
         file_menu.addAction(open_var_action)
 
+        open_br_action = QAction("Open BR Log…", self)
+        open_br_action.setShortcut(QKeySequence("Ctrl+B"))
+        open_br_action.triggered.connect(self.open_br_log)
+        file_menu.addAction(open_br_action)
+
         open_pair_action = QAction("Open Variable + BR Log…", self)
         open_pair_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
         open_pair_action.triggered.connect(self.open_variable_and_br_log)
         file_menu.addAction(open_pair_action)
 
+        file_menu.addSeparator()
+
+        self.add_var_action = QAction("Add Variable Log to Current Tab…", self)
+        self.add_var_action.setShortcut(QKeySequence("Ctrl+Shift+V"))
+        self.add_var_action.triggered.connect(self.add_variable_log_to_current)
+        file_menu.addAction(self.add_var_action)
+
         self.add_br_action = QAction("Add BR Log to Current Tab…", self)
-        self.add_br_action.setShortcut(QKeySequence("Ctrl+B"))
+        self.add_br_action.setShortcut(QKeySequence("Ctrl+Shift+B"))
         self.add_br_action.triggered.connect(self.add_br_log_to_current)
         file_menu.addAction(self.add_br_action)
 
@@ -1471,6 +1513,7 @@ class LogViewer(QMainWindow):
     def _update_actions(self):
         has_session = self.current_session() is not None
         if hasattr(self, "add_br_action"):
+            self.add_var_action.setEnabled(has_session)
             self.add_br_action.setEnabled(has_session)
             self.close_tab_action.setEnabled(has_session)
 
@@ -1531,6 +1574,36 @@ class LogViewer(QMainWindow):
         session = self.new_session()
         session.load_variable_log(var_path)
         session.load_br_log(br_path)
+
+    def open_br_log(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open BR Log", "", "Log Files (*.log)"
+        )
+        if not path:
+            return
+
+        session = self.new_session()
+        session.left_tabs.setCurrentWidget(session.br_tab)   # nothing to show on the Variable tab
+        if not session.load_br_log(path):
+            # Not a valid BR log: don't leave an empty tab behind
+            self.close_session(self.sessions.indexOf(session))
+
+    def add_variable_log_to_current(self):
+        session = self.current_session()
+        if session is None:
+            return
+        if session.var_loading:
+            # Replacing the worker while it runs would destroy a running QThread
+            QMessageBox.information(self, "Variable Log", "This tab is still loading its variable log.")
+            return
+
+        start_dir = os.path.dirname(session.br_path or session.var_path or "")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Add Variable Log", start_dir, "Log Files (*.log)"
+        )
+        if path:
+            session.load_variable_log(path)
+            session.left_tabs.setCurrentWidget(session.log_container)   # show the loading indicator
 
     def add_br_log_to_current(self):
         session = self.current_session()
@@ -1596,6 +1669,10 @@ class LogViewer(QMainWindow):
 
     <h2>Using them together</h2>
     <p>Load a Variable Log and BR Log together via <b>File → Open Variable + BR Log</b>.<br>
+    To look at a Variable log by itself, use <b>File → Open Variable Log</b>.<br>
+    To look at a BR log by itself, use <b>File → Open BR Log</b>.<br>
+    To pair files in a tab that is already open, use <b>File → Add Variable Log to Current Tab</b>
+    or <b>File → Add BR Log to Current Tab</b>.<br>
     Each file you open gets its own tab, so several sessions can be open side by side.<br>
     Clicking a sequence in the Sequence tab will automatically highlight the corresponding
     BR calls that fired during that time window.</p>
