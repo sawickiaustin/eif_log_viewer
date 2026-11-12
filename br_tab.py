@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor
 
-from br_worker import BRLogWorker, encode_terms, execution_matches, ensure_tables
+from br_worker import BRLogWorker, encode_terms, execution_matches, ensure_tables, discard_temp
 
 PAGE_SIZE = 200
 
@@ -46,8 +46,10 @@ class BRTab(QWidget):
         self._current_page = 0
         self._all_executions = []
 
-        # Source file + lowercase search buffer (set when parsing finishes)
+        # File the byte offsets refer to + lowercase search buffer (set when
+        # parsing finishes). For UTF-16 logs br_path is a UTF-8 temp copy.
         self.br_path = None
+        self._temp_path = None
         self.search_buf = None
 
         # Kept for compatibility with app.py
@@ -135,10 +137,16 @@ class BRTab(QWidget):
     # ------------------------------------------------------------
     # Loading
     # ------------------------------------------------------------
+    def release_temp(self):
+        """Delete the UTF-8 temp copy of a UTF-16 log, if this tab made one."""
+        discard_temp(self._temp_path)
+        self._temp_path = None
+
     def load_full_logs(self, filepath):
         # Release the previous file's buffer before parsing the next one
         self.search_buf = None
         self.br_path = None
+        self.release_temp()
         self.br_calls = []
         self.br_name_index = {}
         self.sorted_exec_times = []
@@ -154,6 +162,7 @@ class BRTab(QWidget):
         # Indexes were built in the worker thread; just store references.
         self.br_calls = br_calls
         self.br_path = meta["path"]
+        self._temp_path = meta.get("temp_path")
         self.search_buf = meta["search_buf"]
         self.br_name_index = meta["name_index"]
         self.sorted_exec_times = meta["times"]

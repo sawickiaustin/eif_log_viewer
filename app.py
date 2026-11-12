@@ -17,6 +17,7 @@ from PySide6.QtCore import QDateTime, Qt, QAbstractListModel, QModelIndex, Signa
 from parser import load_log_file
 from period_dialog import PeriodDialog
 from br_tab import BRTab
+from br_worker import looks_like_br_log
 from db_manager import DBManager
 from PySide6.QtCore import QTimer
 from model import LogListModel
@@ -252,22 +253,15 @@ class LogSession(QWidget):
         self.br_tab.sorted_executions = []
         self.br_tab.br_name_index = {}
         self.br_tab.search_buf = None
+        self.br_tab.release_temp()         # UTF-8 copy of a UTF-16 BR log
         return running
 
     # -------------------
     # Menu
     # -------------------
     def load_br_log(self, path):
-        valid = False
-        with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
-            for i, line in enumerate(f):
-                if i >= 100:
-                    break
-                if "BIZRULE" in line or "(REQUESTQ)" in line:
-                    valid = True
-                    break
-
-        if not valid:
+        # Reads the first lines in the file's own encoding (UTF-8 or UTF-16)
+        if not looks_like_br_log(path):
             QMessageBox.critical(
                 self,
                 "Invalid BR Log",
@@ -1669,7 +1663,6 @@ class LogViewer(QMainWindow):
 
     <h2>Using them together</h2>
     <p>Load a Variable Log and BR Log together via <b>File → Open Variable + BR Log</b>.<br>
-    To look at a Variable log by itself, use <b>File → Open Variable Log</b>.<br>
     To look at a BR log by itself, use <b>File → Open BR Log</b>.<br>
     To pair files in a tab that is already open, use <b>File → Add Variable Log to Current Tab</b>
     or <b>File → Add BR Log to Current Tab</b>.<br>

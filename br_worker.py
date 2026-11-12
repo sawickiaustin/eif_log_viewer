@@ -17,11 +17,18 @@ Design:
   - "timestamp" (datetime) is created only when something reads it.
   - All indexes (br_name_index, sorted times) are built in the worker thread,
     so the GUI thread only stores references.
+  - UTF-16 logs are converted once to a temporary UTF-8 copy, and everything
+    (parsing, byte offsets, table reads) works on that copy.
+  - Timestamps may be bare ("2026-10-22 00:00:00.531") or bracketed
+    ("[2026-10-22 00:00:00.531]"), and the call ID may follow any queue name
+    (ELTR(…), ASSY(…), FORM_A(…)).
 """
+import atexit
 import json
 import os
 import re
 import sys
+import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import shared_memory
 from datetime import datetime
@@ -35,9 +42,13 @@ PARALLEL_THRESHOLD = 20 * 1024 * 1024
 MAX_WORKERS = 8
 
 _MARK_RE = re.compile(rb"\((REQUESTQ|RECEIVE_REPLYQ)\)")
+# Call ID: the "(…)" right before " : {" on the marker line, whatever queue
+# name precedes it (ELTR, ASSY, FORM_A, …). Searched from after the marker.
+_ID_RE = re.compile(rb"\(([^()\n]*)\)\s*:\s*\{")
+# Older layout: ID after ELTR/ASSY, brace somewhere later on the line
 _UUID_RE = re.compile(rb"(?:ELTR\w*|ASSY\w*)\(([^)\n]*)\)")
 _ACTID_RE = re.compile(rb'"actID"\s*:\s*"([^"]*)"')
-_NEXT_REC_RE = re.compile(rb"\n\d{4}-\d\d-\d\d \d\d:\d\d:\d\d")
+_NEXT_REC_RE = re.compile(rb"\n\[?\d{4}-\d\d-\d\d \d\d:\d\d:\d\d")
 _WS = b" \t\r\n"
 _BOM = b"\xef\xbb\xbf"
 _LOWER = bytes.maketrans(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ", b"abcdefghijklmnopqrstuvwxyz")
@@ -47,9 +58,12 @@ _LOWER = bytes.maketrans(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ", b"abcdefghijklmnopqrstuv
 # Timestamps
 # ============================================================
 def _ts_text(data, ls):
-    """Bytes of 'YYYY-MM-DD HH:MM:SS[.fff…]' at the start of a line, or None."""
+    """Bytes of 'YYYY-MM-DD HH:MM:SS[.fff…]' at the start of a line (optionally
+    inside '[…]'), or None."""
     if data[ls:ls + 3] == _BOM:
         ls += 3
+    if data[ls:ls + 1] == b"[":
+        ls += 1
     head = data[ls:ls + 26]
     if len(head) < 19 or head[4:5] != b"-" or head[13:14] != b":":
         return None
@@ -95,9 +109,89 @@ class Execution(dict):
 
 
 # ============================================================
+# Encoding (UTF-16 logs are converted to a temporary UTF-8 copy)
+# ============================================================
+_TEMP_FILES = set()
+
+
+def sniff_encoding(path):
+    """'utf-16' for UTF-16 files (with or without a BOM), else 'utf-8-sig'."""
+    with open(path, "rb") as f:
+        head = f.read(4096)
+    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return "utf-16"
+    if len(head) >= 64:
+        # No BOM: mostly-ASCII UTF-16 has a zero byte in every other position
+        if head[1::2].count(0) > len(head) // 4:
+            return "utf-16-le"
+        if head[0::2].count(0) > len(head) // 4:
+            return "utf-16-be"
+    return "utf-8-sig"
+
+
+def looks_like_br_log(path, max_lines=100):
+    """True if one of the first lines has a BR marker, in whatever encoding."""
+    enc = sniff_encoding(path)
+    with open(path, "r", encoding=enc, errors="ignore") as f:
+        for i, line in enumerate(f):
+            if i >= max_lines:
+                break
+            if "BIZRULE" in line or "(REQUESTQ)" in line:
+                return True
+    return False
+
+
+def prepare_br_file(path):
+    """
+    Returns (path_to_parse, temp_path). UTF-8 files are parsed in place
+    (temp_path is None); UTF-16 files are converted to a UTF-8 temp copy first.
+    """
+    enc = sniff_encoding(path)
+    if enc == "utf-8-sig":
+        return path, None
+
+    fd, out = tempfile.mkstemp(prefix="eif_br_", suffix=".log")
+    _TEMP_FILES.add(out)
+    try:
+        with open(path, "r", encoding=enc, errors="replace", newline="") as src, \
+             os.fdopen(fd, "w", encoding="utf-8", newline="") as dst:
+            while True:
+                chunk = src.read(4 << 20)          # 4M characters at a time
+                if not chunk:
+                    break
+                dst.write(chunk)
+    except BaseException:
+        discard_temp(out)
+        raise
+    return out, out
+
+
+def discard_temp(path):
+    """Delete a temp copy made by prepare_br_file (no-op for anything else)."""
+    if path and path in _TEMP_FILES:
+        try:
+            os.remove(path)
+        except OSError:
+            return                                 # still in use; atexit retries
+        _TEMP_FILES.discard(path)
+
+
+@atexit.register
+def _cleanup_temp_files():
+    for p in list(_TEMP_FILES):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    _TEMP_FILES.clear()
+
+
+# ============================================================
 # Parsing (module level so it pickles for multiprocessing)
 # ============================================================
 def _is_record_start(line: bytes) -> bool:
+    if line[:1] == b"[":
+        line = line[1:]
     return (
         len(line) >= 19
         and line[4:5] == b"-" and line[7:8] == b"-" and line[10:11] == b" "
@@ -173,6 +267,7 @@ def _process_br_chunk(path, start, end, shm_name=None):
     skip_until = 0
     names = {}                                   # dedupe names -> smaller pickle
     find, rfind = data.find, data.rfind
+    id_search = _ID_RE.search
     uuid_search = _UUID_RE.search
     next_search = _NEXT_REC_RE.search
     actid_search = _ACTID_RE.search
@@ -189,12 +284,16 @@ def _process_br_chunk(path, start, end, shm_name=None):
         if le == -1:
             le = n
 
-        um = uuid_search(data, ms, le)
-        if um is None:
-            continue
-        brace = find(b"{", um.end(), le)
-        if brace == -1:
-            continue
+        um = id_search(data, m.end(), le)
+        if um is not None:
+            brace = um.end() - 1
+        else:
+            um = uuid_search(data, ms, le)
+            if um is None:
+                continue
+            brace = find(b"{", um.end(), le)
+            if brace == -1:
+                continue
 
         nx = next_search(data, le)
         be = nx.start() if nx else n
@@ -386,8 +485,11 @@ def ensure_tables(execution, path):
         except (json.JSONDecodeError, AttributeError, TypeError):
             pass
 
+    # Output tables: OUT_* (ELTR style), OUTDATA (FORM_A style), plus any name
+    # the request listed in outDTName
+    out_names = {n.strip() for n in str(req.get("outDTName") or "").split(",") if n.strip()}
     for key, value in rep.items():
-        if key.startswith("OUT_") and isinstance(value, list):
+        if (key.startswith("OUT") or key in out_names) and isinstance(value, list):
             tables[key] = norm(value)
 
     execution["tables"] = tables
@@ -398,7 +500,9 @@ def ensure_tables(execution, path):
 # Qt worker
 # ============================================================
 class BRLogWorker(QThread):
-    # (executions, {"path", "search_buf", "name_index", "times"})
+    # (executions, {"path", "temp_path", "source_path", "search_buf", "name_index", "times"})
+    #   path        file the byte offsets refer to (a UTF-8 temp copy for UTF-16 logs)
+    #   temp_path   that temp copy, or None; delete it with discard_temp() when done
     finished = Signal(list, object)
 
     def __init__(self, filepath):
@@ -406,10 +510,13 @@ class BRLogWorker(QThread):
         self.filepath = filepath
 
     def run(self):
-        calls, buf = parse_br_file(self.filepath)
+        parse_path, temp_path = prepare_br_file(self.filepath)
+        calls, buf = parse_br_file(parse_path)
         name_index, times = build_indexes(calls)
         self.finished.emit(calls, {
-            "path": self.filepath,
+            "path": parse_path,
+            "temp_path": temp_path,
+            "source_path": self.filepath,
             "search_buf": buf,
             "name_index": name_index,
             "times": times,
