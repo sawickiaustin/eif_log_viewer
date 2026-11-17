@@ -18,6 +18,7 @@ from parser import load_log_file
 from period_dialog import PeriodDialog
 from br_tab import BRTab
 from br_worker import looks_like_br_log
+import db_manager
 from db_manager import DBManager
 from PySide6.QtCore import QTimer
 from model import LogListModel
@@ -336,6 +337,16 @@ class LogSession(QWidget):
         self.current_equipment = current_equipment
         self.sequences = sequences
         self.item_categories = item_categories  
+
+        # Re-read item_data.json if it was edited, and say so if it can't be used
+        db_manager.reload_if_changed()
+        if db_manager.LOAD_ERROR:
+            kept = "The last good version is still in use." if db_manager.DATA_PATH else \
+                   "Item names and expected BRs won't be shown."
+            QMessageBox.warning(self, "Item Data File",
+                                f"{db_manager.LOAD_ERROR}\n\n{kept}")
+        elif db_manager.LOAD_WARNINGS:
+            self._status("item_data.json: " + " | ".join(db_manager.LOAD_WARNINGS), 8000)
 
         # Dynamic suffix items for DB
         dynamic_items = {}
@@ -1268,17 +1279,8 @@ class LogSession(QWidget):
 
 
     def split_item_code(self, item_code):
-        from db_manager import COMMON_DATA, EQP_DATA
-
-        # Build known bases set (all keys from static data)
-        known_bases = set()
-        for cat_items in COMMON_DATA.values():
-            known_bases.update(cat_items.keys())
-        for eqp_data in EQP_DATA.values():
-            if isinstance(eqp_data, dict):
-                for cat_items in eqp_data.values():
-                    if isinstance(cat_items, dict):
-                        known_bases.update(cat_items.keys())
+        # Every item code in item_data.json (built once per file load, not per call)
+        known_bases = db_manager.known_bases()
 
         # Longest matching prefix wins
         parts = item_code.split("_")
