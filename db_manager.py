@@ -19,6 +19,29 @@ File layout:
 COMMON applies to every equipment; an EQUIPMENT entry replaces the COMMON
 entry with the same item code for that equipment. Keys starting with "_"
 are ignored (use them for notes).
+
+FORM equipment (Degas Loader etc.) reports handshakes with named bits instead
+of B_TRIGGER_REPORT items, so it has its own "FORM" section, keyed by trigger:
+  "FORM": {
+    "SETTINGS": {"ack_ok": ["10"]},          ACK word values that mean OK
+    "COMMON":   {"triggers": {...}},          triggers every FORM equipment has
+    "DEGASLOADER": {
+      "match": ["DEGASLOADER"],               text found in the log's element name
+      "triggers": {
+        "TRAY_INFO:I_B_TRAY_BCR_READ_REQ": {  CATEGORY:VARIABLE of the request
+          "name":    "Tray BCR Read Request",
+          "confirm": "TRAY_INFO:O_B_TRAY_BCR_READ_REQ_CONFIRM",   optional
+          "ack":     "TRAY_INFO:O_W_TRAY_BCR_READ_REQ_CONFIRM_ACK", optional
+          "group":   "TRAY",                  Sequence tab folder (default: CATEGORY)
+          "brs":     ["BR_SET_DEGAS_LD_TRAY_ARRIVED", ...]
+        },
+        "DEGAS_STATUS:I_W_EQP_STATUS": {"type": "word", ...}   every value change
+      }
+    }
+  }
+A bit trigger becomes one sequence per handshake: request ON -> confirm ON ->
+request OFF -> confirm OFF. It is shown in red when the ACK word was not OK,
+the confirm never came, or a new request started before the last one ended.
 """
 import json
 import os
@@ -87,10 +110,78 @@ def _clean_items(items, where, problems):
     return out
 
 
+def _check_key(key, where):
+    if not isinstance(key, str) or key.count(":") != 1 or not all(key.split(":")):
+        raise ItemDataError(f'{where}: "{key}" must be written as CATEGORY:VARIABLE, '
+                            f'e.g. "TRAY_INFO:I_B_TRAY_BCR_READ_REQ"')
+
+
+def _clean_triggers(triggers, where):
+    if not isinstance(triggers, dict):
+        raise ItemDataError(f'{where}/triggers must be an object of triggers')
+    out = {}
+    for key, t in triggers.items():
+        if key.startswith("_"):
+            continue
+        _check_key(key, f"{where}/triggers")
+        if not isinstance(t, dict):
+            raise ItemDataError(f'{where}/triggers/{key} must look like {{"name": "...", "brs": [...]}}')
+        cat, var = key.split(":")
+        kind = t.get("type") or ("word" if "_W_" in var[:4] else "bit")
+        if kind not in ("bit", "word"):
+            raise ItemDataError(f'{where}/triggers/{key}: "type" must be "bit" or "word"')
+        brs = t.get("brs", [])
+        if isinstance(brs, str):
+            brs = [brs]
+        if not isinstance(brs, list):
+            raise ItemDataError(f'{where}/triggers/{key}: "brs" must be a list of BR names')
+        item = {
+            "name": str(t.get("name") or var),
+            "type": kind,
+            "group": str(t.get("group") or cat),
+            "brs": [str(b).strip() for b in brs if str(b).strip()],
+        }
+        for field in ("confirm", "ack"):
+            if t.get(field):
+                _check_key(t[field], f"{where}/triggers/{key}/{field}")
+                item[field] = t[field]
+        if "ack_ok" in t:
+            item["ack_ok"] = [str(v) for v in t["ack_ok"]]
+        out[key] = item
+    return out
+
+
+def _clean_form(form):
+    """FORM section -> {"settings": {...}, "common": {key: trigger}, "equipment": {eqp: {...}}}"""
+    if not form:
+        return {"settings": {"ack_ok": ["10"]}, "common": {}, "equipment": {}}
+    if not isinstance(form, dict):
+        raise ItemDataError("FORM must be an object")
+    settings = form.get("SETTINGS") or {}
+    out = {
+        "settings": {"ack_ok": [str(v) for v in settings.get("ack_ok", ["10"])]},
+        "common": _clean_triggers((form.get("COMMON") or {}).get("triggers", {}), "FORM/COMMON"),
+        "equipment": {},
+    }
+    for eqp, cfg in form.items():
+        if eqp.startswith("_") or eqp in ("SETTINGS", "COMMON"):
+            continue
+        if not isinstance(cfg, dict):
+            raise ItemDataError(f"FORM/{eqp} must be an object with match and triggers")
+        match = cfg.get("match") or [eqp]
+        if isinstance(match, str):
+            match = [match]
+        out["equipment"][eqp] = {
+            "match": [str(m).upper() for m in match if str(m).strip()],
+            "triggers": _clean_triggers(cfg.get("triggers", {}), f"FORM/{eqp}"),
+        }
+    return out
+
+
 def load_item_data(path=None):
     """
     Read and check the item data file.
-    Returns (common, equipment, warnings). Raises ItemDataError on a bad file.
+    Returns (common, equipment, form, warnings). Raises ItemDataError on a bad file.
     """
     path = path or find_data_file()
     if path is None:
@@ -128,6 +219,8 @@ def load_item_data(path=None):
             for cat, items in cats.items() if not cat.startswith("_")
         }
 
+    form = _clean_form(doc.get("FORM"))
+
     warnings = []
     if dupes:
         warnings.append("Duplicate item codes (the last one is used): " + ", ".join(sorted(set(dupes))))
@@ -135,7 +228,7 @@ def load_item_data(path=None):
     unknown = [c for c in unknown if c not in CATEGORIES]
     if unknown:
         warnings.append("Unknown categories (shown as written): " + ", ".join(unknown))
-    return common, equipment, warnings
+    return common, equipment, form, warnings
 
 
 # ------------------------------------------------------------
@@ -143,6 +236,7 @@ def load_item_data(path=None):
 # ------------------------------------------------------------
 COMMON_DATA = {}
 EQP_DATA = {}
+FORM_DATA = {"settings": {"ack_ok": ["10"]}, "common": {}, "equipment": {}}
 DATA_PATH = None
 LOAD_ERROR = None          # message of the last failed load, or None
 LOAD_WARNINGS = []
@@ -156,7 +250,7 @@ def reload_if_changed(force=False):
     On a bad file the previous good data is kept and LOAD_ERROR says why.
     Returns True if new data was loaded.
     """
-    global COMMON_DATA, EQP_DATA, DATA_PATH, LOAD_ERROR, LOAD_WARNINGS, _loaded_stamp, _known_bases
+    global COMMON_DATA, EQP_DATA, FORM_DATA, DATA_PATH, LOAD_ERROR, LOAD_WARNINGS, _loaded_stamp, _known_bases
     path = find_data_file()
     try:
         stamp = (path, os.path.getmtime(path), os.path.getsize(path)) if path else None
@@ -165,11 +259,11 @@ def reload_if_changed(force=False):
     if not force and stamp is not None and stamp == _loaded_stamp:
         return False
     try:
-        common, equipment, warnings = load_item_data(path)
+        common, equipment, form, warnings = load_item_data(path)
     except ItemDataError as e:
         LOAD_ERROR = str(e)
         return False
-    COMMON_DATA, EQP_DATA, DATA_PATH = common, equipment, path
+    COMMON_DATA, EQP_DATA, FORM_DATA, DATA_PATH = common, equipment, form, path
     LOAD_ERROR, LOAD_WARNINGS = None, warnings
     _loaded_stamp, _known_bases = stamp, None
     return True
@@ -187,6 +281,30 @@ def known_bases():
                 bases.update(items)
         _known_bases = bases
     return _known_bases
+
+
+FORM_PREFIX = "FORM:"
+
+
+def form_triggers(eqp):
+    """All triggers for one FORM equipment: FORM COMMON, then that equipment's own (which win)."""
+    triggers = dict(FORM_DATA["common"])
+    triggers.update(FORM_DATA["equipment"].get(eqp, {}).get("triggers", {}))
+    return triggers
+
+
+def form_worker_config():
+    """
+    Plain dict handed to VariableLogWorker:
+      {"ack_ok": [...], "equipment": {eqp: {"match": [...], "triggers": {...}}}}
+    """
+    return {
+        "ack_ok": list(FORM_DATA["settings"]["ack_ok"]),
+        "equipment": {
+            eqp: {"match": list(cfg["match"]), "triggers": form_triggers(eqp)}
+            for eqp, cfg in FORM_DATA["equipment"].items()
+        },
+    }
 
 
 reload_if_changed(force=True)
@@ -319,8 +437,15 @@ class DBManager:
         self.clear_all()
         merged = {}
 
+        # FORM equipment: the items are its triggers ("CATEGORY:VARIABLE"),
+        # not the ELEC/ASSY item tables
+        is_form = isinstance(eqp, str) and eqp.startswith(FORM_PREFIX)
+        if is_form:
+            for key, t in form_triggers(eqp[len(FORM_PREFIX):]).items():
+                merged[key] = {"name": t["name"], "brs": list(t["brs"]), "category": t["group"]}
+
         # 1️⃣ Load COMMON (default EQP)
-        for category, items in COMMON_DATA.items():
+        for category, items in ({} if is_form else COMMON_DATA).items():
             for item_code, data in items.items():
                 merged[item_code] = {
                     "name": data["name"],
@@ -329,7 +454,7 @@ class DBManager:
                 }
 
         # 2️⃣ Apply Equipment Override
-        eqp_data = EQP_DATA.get(eqp, {})
+        eqp_data = {} if is_form else EQP_DATA.get(eqp, {})
         is_new_format = (
             isinstance(eqp_data, dict) and
             any(k in eqp_data for k in ("EQP", "ROLLMAP", "RMS"))

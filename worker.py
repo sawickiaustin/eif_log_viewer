@@ -433,6 +433,143 @@ def _process_br_chunk(filepath, start_line, end_line):
 
 """
 # ============================================================
+# FORM equipment: handshake sequences from configured triggers
+# ============================================================
+# "[CATEGORY:VARIABLE] (Type) : value" - the first match is the real one,
+# values that contain brackets come after it
+_FORM_CV_RE = re.compile(r"\[([A-Za-z0-9_]+):([A-Za-z0-9_]+)\]\s*\(\w+\)\s*:\s?(.*)$")
+# "<date> <time> [Level] [ELEMENT]" - the element name identifies the equipment
+_FORM_ELEMENT_RE = re.compile(r"^﻿?\S+ \S+ \[\w+\] \[([^\]]+)\]")
+
+
+def detect_form_equipment(logs, form_cfg, max_lines=2000):
+    """FORM equipment key whose "match" text is in the log's element name, or None."""
+    if not form_cfg or not form_cfg.get("equipment"):
+        return None
+    # Longest match first, so "DEGASLOADER" wins over a shorter "LOADER"
+    cands = sorted(
+        ((m, eqp) for eqp, cfg in form_cfg["equipment"].items() for m in cfg.get("match", [])),
+        key=lambda x: -len(x[0]),
+    )
+    for log in logs[:max_lines]:
+        m = _FORM_ELEMENT_RE.match(log.raw)
+        if not m:
+            continue
+        element = m.group(1).upper()
+        for text, eqp in cands:
+            if text in element:
+                return eqp
+    return None
+
+
+def _precise_ts(log):
+    """log.ts only has whole seconds; add the milliseconds from the raw line."""
+    ts = log.ts
+    raw = log.raw.lstrip("﻿")
+    if ts is not None and len(raw) > 23 and raw[19] == "." and raw[20:23].isdigit():
+        return ts.replace(microsecond=int(raw[20:23]) * 1000)
+    return ts
+
+
+def build_form_sequences(logs, triggers, ack_ok=("10",)):
+    """
+    logs must be in time order. Returns {trigger_key: [sequence, ...]}.
+
+    bit trigger:  request ON -> confirm ON -> request OFF -> confirm OFF = one "B" sequence
+                  (no confirm configured: request ON -> request OFF)
+    word trigger: every logged value change = one "W" sequence
+    error (red):  ACK word not in ack_ok, confirm never ON, confirm dropped before the
+                  request, or a new request ON before the previous handshake finished
+    """
+    confirms, acks = {}, {}
+    for key, t in triggers.items():
+        if t.get("confirm"):
+            confirms.setdefault(t["confirm"], []).append(key)
+        if t.get("ack"):
+            acks.setdefault(t["ack"], []).append(key)
+
+    sequences, active = {}, {}
+
+    def handshake_keys(key):
+        t = triggers[key]
+        return [k for k in (key, t.get("confirm"), t.get("ack")) if k]
+
+    def close(key, end, error=False):
+        a = active.pop(key)
+        keys = handshake_keys(key)
+        sequences.setdefault(key, []).append({
+            "start": a["start"],
+            "end": end,
+            "type": "B",
+            "core_indices": [l.original_index for l in a["logs"]],
+            "error": bool(error or a["nak"]),
+            "form": True,
+            "categories": sorted({k.split(":")[0] for k in keys}),
+            "handshake": keys,
+        })
+
+    for log in logs:
+        if log.ts is None:
+            continue
+        m = _FORM_CV_RE.search(log.raw)
+        if not m:
+            continue
+        key = f"{m.group(1)}:{m.group(2)}"
+        val = m.group(3).strip()
+
+        t = triggers.get(key)
+        if t is not None:
+            ts = _precise_ts(log)
+            if t["type"] == "word":
+                sequences.setdefault(key, []).append({
+                    "start": ts, "end": ts, "type": "W",
+                    "core_indices": [log.original_index], "error": False,
+                    "form": True, "categories": [m.group(1)], "handshake": [key],
+                })
+            elif val == "ON":
+                if key in active:                       # last handshake never finished
+                    close(key, active[key]["last"], error=True)
+                active[key] = {"start": ts, "last": ts, "logs": [log],
+                               "conf_on": False, "conf_off": False, "req_off": False, "nak": False}
+            elif val == "OFF" and key in active:
+                a = active[key]
+                a["req_off"] = True
+                a["last"] = ts
+                a["logs"].append(log)
+                if not t.get("confirm"):
+                    close(key, ts)
+                elif a["conf_off"]:                     # host dropped confirm first (timeout)
+                    close(key, ts, error=True)
+
+        for tk in confirms.get(key, ()):
+            a = active.get(tk)
+            if a is None:
+                continue
+            ts = _precise_ts(log)
+            a["logs"].append(log)
+            a["last"] = ts
+            if val == "ON":
+                a["conf_on"] = True
+            elif val == "OFF":
+                a["conf_off"] = True
+                if a["req_off"]:
+                    close(tk, ts, error=not a["conf_on"])
+
+        for tk in acks.get(key, ()):
+            a = active.get(tk)
+            if a is None:
+                continue
+            a["logs"].append(log)
+            ok = triggers[tk].get("ack_ok", ack_ok)
+            if val not in ("", "0") and val not in ok:
+                a["nak"] = True
+
+    # Handshakes still open when the file ends: keep them, they are just cut off
+    for key in list(active):
+        close(key, active[key]["last"])
+    return sequences
+
+# ============================================================
 # Variable Log Worker (with integrated sequence building)
 # ============================================================
 class VariableLogWorker(QThread):
@@ -441,9 +578,26 @@ class VariableLogWorker(QThread):
 
     KNOWN_EQUIPMENTS = ["MIX","COT","ROL","RWD","TRS","SLT","NND","LAM","CESS","PKG"]
 
-    def __init__(self, filepath):
+    def __init__(self, filepath, form_cfg=None):
         super().__init__()
         self.filepath = filepath
+        self.form_cfg = form_cfg       # db_manager.form_worker_config(), or None
+
+    def _emit(self, sorted_logs, sorted_timestamps, item_index, current_equipment,
+              skipped_count, sequences, item_categories):
+        """Add FORM handshake sequences (if this is a FORM equipment log), then emit."""
+        form_eqp = detect_form_equipment(sorted_logs, self.form_cfg)
+        if form_eqp:
+            current_equipment = "FORM:" + form_eqp
+            triggers = self.form_cfg["equipment"][form_eqp]["triggers"]
+            form_seqs = build_form_sequences(sorted_logs, triggers, self.form_cfg.get("ack_ok", ["10"]))
+            for key, seqs in form_seqs.items():
+                sequences[key] = seqs
+                item_categories[key] = triggers[key]["group"]
+        self.finished.emit(
+            sorted_logs, sorted_timestamps, item_index, current_equipment,
+            skipped_count, sequences, item_categories
+        )
 
     def run(self):
         file_size = os.path.getsize(self.filepath)
@@ -510,7 +664,7 @@ class VariableLogWorker(QThread):
         if total_skipped > 0:
             print(f"⚠ Skipped {total_skipped:,} invalid lines during variable log load")
     
-        self.finished.emit(
+        self._emit(
             all_logs, sorted_timestamps, all_item_index, current_equipment,
             total_skipped, all_sequences, all_item_categories
         )
@@ -752,7 +906,7 @@ class VariableLogWorker(QThread):
             print(f"⚠ Skipped {skipped_count:,} invalid lines during variable log load")
 
         # 🔥 Emit with the categories we built during parsing
-        self.finished.emit(
+        self._emit(
             sorted_logs, sorted_timestamps, item_index, current_equipment, 
             skipped_count, sequences, item_categories
         )

@@ -22,7 +22,7 @@ import db_manager
 from db_manager import DBManager
 from PySide6.QtCore import QTimer
 from model import LogListModel
-from worker import VariableLogWorker
+from worker import VariableLogWorker, _FORM_CV_RE as FORM_CV_RE
 
 def resource_path(name):
     """Path to a bundled file, both from source and inside a PyInstaller exe."""
@@ -312,7 +312,9 @@ class LogSession(QWidget):
         self.log_list.hide()
 
         # 🔥 Pass filepath, not logs
-        self._var_worker = VariableLogWorker(path)
+        # FORM trigger definitions come from item_data.json (re-read if it was edited)
+        db_manager.reload_if_changed()
+        self._var_worker = VariableLogWorker(path, db_manager.form_worker_config())
         self._var_worker.finished.connect(self._on_variable_log_ready)
         self._var_worker.start()
 
@@ -369,7 +371,8 @@ class LogSession(QWidget):
         self.titleChanged.emit(self)
 
         self._status(
-            f"Loaded {len(self.variable_logs):,} variable log lines.", 4000
+            f"Loaded {len(self.variable_logs):,} variable log lines"
+            f" ({current_equipment or 'equipment not recognised'}).", 4000
         )
 
     # -------------------
@@ -759,15 +762,36 @@ class LogSession(QWidget):
         # ---------------------------------
         import bisect
 
-        left = bisect.bisect_left(self.variable_timestamps, st_ts)
+        # Line timestamps are whole seconds; FORM sequence times have milliseconds
+        import math
+        left = bisect.bisect_left(self.variable_timestamps, math.floor(st_ts))
         right = bisect.bisect_right(self.variable_timestamps, et_ts)
 
         logs_in_range = self.variable_logs[left:right]
 
         # =====================================================
+        # 🟣 FORM SEQUENCE (configured trigger handshake)
+        # =====================================================
+        if seq.get("form"):
+            core_set = set(seq.get("core_indices", []))
+            categories = set(seq.get("categories", []))
+            handshake = set(seq.get("handshake", []))
+
+            final_logs = []
+            for log in logs_in_range:
+                m = FORM_CV_RE.search(log.raw)
+                if not m or m.group(1) not in categories:
+                    continue
+                # Other handshakes of the same trigger nearby belong to other sequences
+                if f"{m.group(1)}:{m.group(2)}" in handshake and log.original_index not in core_set:
+                    continue
+                final_logs.append(log)
+            self.display_logs(final_logs)
+
+        # =====================================================
         # 🔴 B SEQUENCE HANDLING
         # =====================================================
-        if seq["type"] == "B":
+        elif seq["type"] == "B":
             core_set = set(seq.get("core_indices", []))
 
             final_logs = []
